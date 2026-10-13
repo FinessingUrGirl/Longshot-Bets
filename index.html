@@ -186,8 +186,10 @@ const pct = p => (p * 100).toFixed(1) + "%";
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const median = xs => { const s = [...xs].sort((a, b) => a - b); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
 const prettyMarket = k => {
+  k = k.replace(/_?\d+plus_?/, "_");
+  if (/anytime_td|anytime_touchdown/.test(k)) return "Anytime TD";
   const map = { pass_yds: "Pass Yds", rush_yds: "Rush Yds", reception_yds: "Rec Yds", rec_yds: "Rec Yds", pass_tds: "Pass TDs", pass_attempts: "Pass Att", pass_completions: "Completions", hits_runs_rbis: "H+R+RBI", points_rebounds_assists: "Pts+Reb+Ast", shots_on_goal: "Shots on Goal" };
-  let s = k.replace(/^(player|batter|pitcher|goalie)_/, "");
+  let s = k.replace(/^_+|_+$/g, "").replace(/^(player|batter|pitcher|goalie)_/, "");
   if (map[s]) return map[s];
   return s.split("_").map(w => w.length <= 3 && /^(yds|tds|rbi|sog)$/.test(w) ? w.toUpperCase() : w[0].toUpperCase() + w.slice(1)).join(" ");
 };
@@ -202,13 +204,16 @@ const S = {
   tab: "machine",
   sport: store.get("sport", "football_nfl"),
   book: store.get("book", "draftkings"),
-  f: { days: new Set(), games: new Set(), off: new Set(), alt: true, overs: false, odds: "any", open: false },
+  f: { days: new Set(), games: new Set(), off: new Set(), alt: true, overs: false, odds: "any", open: false, yes: true, hit: store.get("hit", true) },
   byLegs: true, legN: 4, target: 1000, maxLegs: null, stake: 10,
   ticket: [], kept: new Set(), removed: new Set(), drawn: {},
   saved: store.get("saved", []),
   data: {}, loading: {}, error: "", remaining: store.get("remaining", null),
   sheet: null, notice: "",
+  logs: {}, logBusy: {}, logProg: null, grading: false, shared: null,
 };
+for (const sp of SPORTS) S.logs[sp.k] = store.get("logs_" + sp.k, {});
+
 for (const sp of SPORTS) { const d = store.get("data_" + sp.k, null); if (d) S.data[sp.k] = d; }
 
 /* ---------- API ---------- */
@@ -273,11 +278,24 @@ async function loadSport(sk) {
       if (!events.length && firstErr) throw firstErr.error;
       built = build(events);
     }
-    saveData(sk, { t: now, games: evs.map(gameOf), legs: built.legs, links: built.links });
+    // market-implied projections (paid plan); one call per game, skipped quietly if unavailable
+    const proj = {};
+    const pres = await pool(evs, 4, e => api(`/sports/${sk}/events/${e.id}/projections`));
+    pres.forEach((r, i) => {
+      if (!r || r.error || r.redacted || !Array.isArray(r.projections)) return;
+      const gid = String(evs[i].id);
+      for (const x of r.projections) {
+        if (x.projected_value == null) continue;
+        if (x.player_id) proj[`${gid}|${x.market_key}|${x.player_id}`] = x.projected_value;
+        proj[`${gid}|${x.market_key}|${normName(x.player)}`] = x.projected_value;
+      }
+    });
+    saveData(sk, { t: now, games: evs.map(gameOf), legs: built.legs, links: built.links, proj });
   } catch (e) {
     S.error = e.message;
   } finally {
     S.loading[sk] = false; render();
+    if (sk === S.sport) ensureLogs();
   }
 }
 const gameOf = e => ({ id: String(e.id), label: `${e.away_team} @ ${e.home_team}`, t: e.commence_time });
@@ -287,12 +305,33 @@ function saveData(sk, d) {
   if (sk === S.sport) { S.ticket = []; S.kept.clear(); }
 }
 
-/* Turn raw odds into priced legs: group each player/market/line across books,
-   remove each book's cut from its over/under pair, and use Pinnacle's fair price
-   (or the median across books) as the fair chance. */
+const normName = s => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\s*\([^)]*\)\s*$/, "").replace(/[^a-z0-9 ]/g, "").replace(/\s+(jr|sr|ii|iii)$/, "").trim();
+const cleanName = s => String(s).replace(/\s*\([^)]*\)\s*$/, "");
+
+/* Read one outcome as either a two-way over/under line or a one-sided "Yes" prop
+   (anytime TD, 2+ hits, "to record a hit"). Returns null for anything else. */
+function parseOutcome(mkey, o) {
+  if (!o || o.price == null) return null;
+  if ((o.name === "Over" || o.name === "Under") && o.point != null && o.description)
+    return { kind: "ou", player: cleanName(o.description), pk: o.player_id || normName(o.description), line: o.point, side: o.name[0] };
+  if (o.point != null) return null;
+  let player = null, n = null, side = "Y";
+  const mN = /^(\d+)\+/.exec(o.name || "");
+  if (mN && o.description) { player = o.description; n = +mN[1]; }
+  else if ((o.name === "Yes" || o.name === "No") && o.description) { player = o.description; side = o.name === "Yes" ? "Y" : "N"; }
+  else if (o.name && !/^(Over|Under|Yes|No)$/.test(o.name) && (!o.description || normName(o.description) === normName(o.name))) player = o.name;
+  if (!player) return null;
+  if (n == null) { const k = /(\d+)plus/.exec(mkey); n = k ? +k[1] : 1; }
+  return { kind: "yes", player: cleanName(player), pk: o.player_id || normName(player), line: n, side };
+}
+const legKey = (m, pk, kind, line, side) => `${m}|${pk}|${kind === "yes" ? "Y" + line : line}|${side}`;
+
+/* Turn raw odds into priced legs. Over/under: remove each book's cut from its pair and
+   use Pinnacle's fair price (or the median across books). Yes props: devig where a book
+   posts Yes and No; otherwise estimate from the books' Yes prices (marked Est.). */
+const YES_HOLD = 1.12;
 function build(events) {
   const groups = new Map(), links = {};
-  const norm = s => s.toLowerCase().replace(/\s*\([^)]*\)\s*$/, "").replace(/[^a-z0-9 ]/g, "").replace(/\s+(jr|sr|ii|iii)$/, "").trim();
   for (const ev of events) {
     if (!ev || !ev.bookmakers) continue;
     const gid = String(ev.id);
@@ -301,33 +340,45 @@ function build(events) {
       for (const m of b.markets || []) {
         if (m.period) continue;
         for (const o of m.outcomes || []) {
-          if ((o.name !== "Over" && o.name !== "Under") || o.point == null || !o.description || o.price == null) continue;
-          const pkey = o.player_id || norm(o.description);
-          const key = `${gid}|${m.key}|${pkey}|${o.point}`;
+          const x = parseOutcome(m.key, o); if (!x) continue;
+          const key = `${gid}|${m.key}|${x.pk}|${x.kind === "yes" ? "Y" + x.line : x.line}`;
           let g = groups.get(key);
-          if (!g) { g = { gid, m: m.key, p: o.description.replace(/\s*\([^)]*\)\s*$/, ""), pk: pkey, pt: o.point, alt: true, books: {} }; groups.set(key, g); }
-          if ((o.line_type || m.line_type) === "main") g.alt = false;
-          (g.books[b.key] ||= {})[o.name[0]] = o.price;
+          if (!g) { g = { gid, m: m.key, p: x.player, pk: x.pk, pt: x.line, kind: x.kind, alt: x.kind === "ou", books: {} }; groups.set(key, g); }
+          if (x.kind === "ou" && (o.line_type || m.line_type) === "main") g.alt = false;
+          (g.books[b.key] ||= {})[x.side] = o.price;
         }
       }
     }
   }
   const legs = [];
   for (const [key, g] of groups) {
-    const fairs = {};
-    for (const [bk, pr] of Object.entries(g.books)) {
-      if (pr.O != null && pr.U != null) { const a = imp(pr.O), c = imp(pr.U); fairs[bk] = a / (a + c); }
-    }
-    const fk = Object.keys(fairs);
-    if (!fk.length) continue;
-    const pOver = fairs.pinnacle != null ? fairs.pinnacle : median(fk.map(k => fairs[k]));
-    const thin = fk.length < 2 && fairs.pinnacle == null;
-    for (const side of ["O", "U"]) {
+    if (g.kind === "ou") {
+      const fairs = {};
+      for (const [bk, pr] of Object.entries(g.books)) if (pr.O != null && pr.U != null) { const a = imp(pr.O), c = imp(pr.U); fairs[bk] = a / (a + c); }
+      const fk = Object.keys(fairs); if (!fk.length) continue;
+      const pOver = fairs.pinnacle != null ? fairs.pinnacle : median(fk.map(k => fairs[k]));
+      const thin = fk.length < 2 && fairs.pinnacle == null;
+      for (const side of ["O", "U"]) {
+        const pr = {};
+        for (const bk of BOOK_KEYS) { const v = g.books[bk] && g.books[bk][side]; if (v != null && v > -2000 && v < 5000) pr[bk] = v; }
+        if (!Object.keys(pr).length) continue;
+        legs.push({ id: key + "|" + side, g: g.gid, m: g.m, p: g.p, pk: g.pk, pt: g.pt, s: side, kind: "ou", alt: g.alt,
+          f: side === "O" ? pOver : 1 - pOver, thin, n: fk.length, pr });
+      }
+    } else {
+      const pairs = [], ones = [];
+      for (const [bk, pr] of Object.entries(g.books)) {
+        if (pr.Y == null) continue;
+        if (pr.N != null) { const a = imp(pr.Y), c = imp(pr.N); pairs.push(a / (a + c)); } else ones.push(imp(pr.Y));
+      }
+      if (!pairs.length && !ones.length) continue;
+      const est = !pairs.length;
+      const f = Math.min(0.97, est ? median(ones) / YES_HOLD : median(pairs));
       const pr = {};
-      for (const bk of BOOK_KEYS) { const v = g.books[bk] && g.books[bk][side]; if (v != null && v > -2000 && v < 5000) pr[bk] = v; }
+      for (const bk of BOOK_KEYS) { const v = g.books[bk] && g.books[bk].Y; if (v != null && v > -2000 && v < 10000) pr[bk] = v; }
       if (!Object.keys(pr).length) continue;
-      legs.push({ id: key + "|" + side, g: g.gid, m: g.m, p: g.p, pk: g.pk, pt: g.pt, s: side, alt: g.alt,
-        f: side === "O" ? pOver : 1 - pOver, thin, n: fk.length, pr });
+      legs.push({ id: key + "|Y", g: g.gid, m: g.m, p: g.p, pk: g.pk, pt: g.pt, s: "Y", kind: "yes", alt: g.pt >= 2,
+        f, est, thin: false, n: pairs.length + ones.length, pr });
     }
   }
   return { legs, links };
@@ -346,7 +397,75 @@ function priceTicket(legs, stake, book) {
   const ret = stake * d, fairRet = f > 0 ? stake / f : 0;
   return { ret, fairRet, f, cut: fairRet ? 1 - ret / fairRet : 0, oneIn: f ? 1 / f : 0 };
 }
-const legTitle = l => `${l.p} ${l.s === "O" ? "Over" : "Under"} ${l.pt} ${prettyMarket(l.m)}`;
+const legSide = l => l.kind === "yes"
+  ? (prettyMarket(l.m) === "Anytime TD" && l.pt === 1 ? "Anytime TD" : `${l.pt}+ ${prettyMarket(l.m)}`)
+  : `${l.s === "O" ? "Over" : "Under"} ${l.pt} ${prettyMarket(l.m)}`;
+const legTitle = l => `${l.p} ${legSide(l)}`;
+const projOf = (l, d = D()) => { const pj = d && d.proj; if (!pj) return null; const v = pj[`${l.g}|${l.m}|${l.pk}`] ?? pj[`${l.g}|${l.m}|${normName(l.p)}`]; return v == null ? null : v; };
+const fairAmerican = p => Math.round(p >= .5 ? -p / (1 - p) * 100 : (1 - p) / p * 100);
+
+/* Which box-score stat a market settles on (for the "lines he's hit" filter and player card) */
+function statFor(sk, key) {
+  const k = key.replace(/_?\d+plus_?/, "_");
+  const R = [
+    [/pass_rush|pass_and_rush/, "pass_rush_yds"], [/rush_rec|rush_and_rec|rush_reception/, "rush_reception_yds"],
+    [/pass_yds|passing_yards/, "passing_yards"], [/rush_yds|rushing_yards/, "rushing_yards"], [/rec(eption)?_yds|receiving_yards/, "receiving_yards"],
+    [/pass_tds/, "passing_tds"], [/pass_completions/, "passing_completions"], [/pass_attempts/, "passing_attempts"], [/rush_attempts/, "rushing_attempts"],
+    [/interceptions/, "interceptions"], [/anytime_td/, "anytime_td"], [/receptions/, "receptions"],
+    [/points_rebounds_assists|pra/, "points_rebounds_assists"], [/points_rebounds/, "points_rebounds"], [/points_assists/, "points_assists"], [/rebounds_assists/, "rebounds_assists"],
+    [/threes/, "threes"], [/rebounds/, "rebounds"], [/assists/, sk === "hockey_nhl" ? null : "assists"], [/steals/, "steals"], [/blocks$|_blocks/, "blocks"], [/turnovers/, "turnovers"],
+    [/shots_on_goal/, "shots_on_goal"], [/blocked_shots/, "blocked_shots"], [/saves/, "saves"], [/power_play/, "power_play_points"], [/goals/, "goals"],
+    [/pitcher_strikeouts/, "strikeouts"], [/batter_strikeouts/, "batter_strikeouts"], [/earned_runs/, "earned_runs"], [/hits_allowed/, "hits_allowed"], [/pitcher_outs/, "outs"],
+    [/hits_runs_rbis/, "hits_runs_rbis"], [/total_bases/, "total_bases"], [/home_runs/, "home_runs"], [/stolen_bases/, "stolen_bases"], [/singles/, "singles"], [/doubles/, "doubles"],
+    [/rbis/, "rbis"], [/batter_runs/, "runs"], [/batter_walks/, "walks"], [/batter_hits/, "hits"],
+    [/points/, sk === "hockey_nhl" ? "points_nhl" : "points"],
+  ];
+  for (const [re, st] of R) if (re.test(k)) return st;
+  return null;
+}
+const SEASON_START = { football_nfl: 8, basketball_nba: 9, hockey_nhl: 9, baseball_mlb: 2 }; // month index
+function seasonStart(sk) { const now = new Date(), m = SEASON_START[sk] ?? 0; return Date.UTC(now.getUTCMonth() >= m ? now.getUTCFullYear() : now.getUTCFullYear() - 1, m, 1); }
+function statValues(sk, l) {
+  const st = statFor(sk, l.m), lg = S.logs[sk][l.pk]; if (!st || !lg) return null;
+  const from = seasonStart(sk);
+  return lg.games.filter(x => Date.parse(x.t) >= from && x.s[st] != null).map(x => ({ t: x.t, v: x.s[st], opp: x.o }));
+}
+/* true = player has reached this line at least once this season, false = never, null = unknown */
+function hitBefore(sk, l) {
+  const vals = statValues(sk, l); if (!vals || !vals.length) return null;
+  if (l.kind === "yes") return vals.some(x => x.v >= l.pt);
+  return l.s === "O" ? vals.some(x => x.v > l.pt) : vals.some(x => x.v < l.pt);
+}
+const LOG_TTL = 12 * 36e5;
+async function fetchLog(sk, l) {
+  const pid = String(l.pk).includes(":") ? l.pk : l.p;
+  const r = await api(`/sports/${sk}/players/${encodeURIComponent(pid).replace(/%3A/gi, ":")}/games`, { limit: 30 });
+  S.logs[sk][l.pk] = { at: Date.now(), games: (r.games || []).map(x => ({ t: x.commence_time, o: x.opponent || "", s: x.stats || {} })) };
+}
+function persistLogs(sk) {
+  const L = S.logs[sk], cut = Date.now() - 3 * 864e5;
+  for (const k of Object.keys(L)) if (L[k].at < cut) delete L[k];
+  if (!store.set("logs_" + sk, L)) { /* storage full: keep in memory */ }
+}
+async function ensureLogs() {
+  const sk = S.sport, d = D();
+  if (!S.f.hit || !d || !S.key || S.logBusy[sk]) return;
+  const now = Date.now(), gm = gameMap(), seen = new Set(), need = [];
+  for (const l of d.legs) {
+    if (!(l.alt) || seen.has(l.pk) || !statFor(sk, l.m) || !gm[l.g] || Date.parse(gm[l.g].t) < now) continue;
+    seen.add(l.pk);
+    const lg = S.logs[sk][l.pk]; if (!lg || now - lg.at > LOG_TTL) need.push(l);
+  }
+  if (!need.length) return;
+  S.logBusy[sk] = true; S.logProg = { done: 0, total: need.length };
+  let tick = 0;
+  await pool(need.slice(0, 500), 4, async l => {
+    try { await fetchLog(sk, l); } catch (e) { if (/limit|key/.test(e.message)) throw e; }
+    S.logProg.done++;
+    if (++tick % 15 === 0) { persistLogs(sk); if (!S.sheet) render(); }
+  });
+  persistLogs(sk); S.logBusy[sk] = false; S.logProg = null; render();
+}
 
 /* ---------- pool + engine ---------- */
 function D() { return S.data[S.sport] || null; }
@@ -361,8 +480,10 @@ function poolLegs() {
     if (f.days.size && !f.days.has(dayOf(g.t))) return false;
     if (f.games.size && !f.games.has(l.g)) return false;
     if (f.off.has(l.m)) return false;
-    if (!f.alt && l.alt) return false;
-    if (f.overs && l.s !== "O") return false;
+    if (!f.alt && l.alt && l.kind === "ou") return false;
+    if (!f.yes && l.kind === "yes") return false;
+    if (f.overs && l.s === "U") return false;
+    if (f.hit && l.alt && hitBefore(S.sport, l) === false) return false;
     const p = priceAt(l, S.book); if (!p) return false;
     if (Date.parse(g.t) < Date.now()) return false;
     if (f.odds === "safer" && l.f < 0.55) return false;
@@ -435,11 +556,86 @@ function alternatives(l) {
     .sort((a, b) => a.m.localeCompare(b.m) || a.pt - b.pt || a.s.localeCompare(b.s));
 }
 
-/* ---------- ticket text / share ---------- */
-function ticketText(legs, stake, book) {
-  const pr = priceTicket(legs, stake, book), gm = gameMap();
-  const lines = legs.map((l, i) => { const p = priceAt(l, book); return `${i + 1}) ${legTitle(l)} ${fmtA(p && p.a)}${gm[l.g] ? "  [" + gm[l.g].label + "]" : ""}`; });
-  return `Longshot Lab ticket (${book ? bookName(book) : "best prices"})\n${lines.join("\n")}\nStake ${money(stake)} returns ${money(pr.ret)}\nReal odds: 1 in ${Math.round(pr.oneIn).toLocaleString("en-US")}\n21+. Entertainment only. 1-800-GAMBLER`;
+/* ---------- ticket text / image / link ---------- */
+/* A self-contained snapshot of a ticket, used for saving, text, images and links */
+function snapshot(legs, stake, book, sk) {
+  const gm = gameMap(), sp = SPORTS.find(s => s.k === sk);
+  return {
+    at: Date.now(), sk, sport: sp ? sp.l : "", book, stake,
+    legs: legs.map(l => { const p = priceAt(l, book); const g = gm[l.g];
+      return { g: l.g, m: l.m, pk: l.pk, p: l.p, pt: l.pt, s: l.s, kind: l.kind || "ou", f: l.f, est: !!l.est,
+        a: p ? p.a : null, b: p ? p.b : null, gl: g ? g.label : "", gt: g ? g.t : null, title: legTitle(l) }; }),
+  };
+}
+function snapPrice(t) {
+  let d = 1, f = 1; for (const l of t.legs) { if (l.a == null) continue; d *= dec(l.a); f *= l.f; }
+  const ret = t.stake * d, fairRet = f ? t.stake / f : 0; return { ret, fairRet, f, oneIn: f ? 1 / f : 0, cut: fairRet ? 1 - ret / fairRet : 0 };
+}
+function snapText(t) {
+  const pr = snapPrice(t);
+  const lines = t.legs.map((l, i) => `${i + 1}) ${l.title} ${fmtA(l.a)}${l.gl ? "  [" + l.gl + "]" : ""}${l.r ? "  " + RES[l.r].t : ""}`);
+  return `Longshot Lab · ${t.sport} ${t.legs.length}-leg parlay (${t.book ? bookName(t.book) : "best prices"})\n${lines.join("\n")}\nStake ${money(t.stake)} returns ${money(pr.ret)}\nReal odds: 1 in ${Math.round(pr.oneIn).toLocaleString("en-US")}\n21+. Entertainment only. 1-800-GAMBLER`;
+}
+const curSnap = () => snapshot(S.ticket, S.stake, S.book, S.sport);
+
+const b64e = s => btoa(String.fromCharCode(...new TextEncoder().encode(s))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const b64d = s => new TextDecoder().decode(Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0)));
+function encodeTicket(t) { return b64e(JSON.stringify({ v: 1, s: t.sport, b: t.book, k: t.stake, l: t.legs.map(l => [l.title, l.a, l.gl, +l.f.toFixed(4)]) })); }
+function decodeTicket(q) {
+  const o = JSON.parse(b64d(q)); if (!o || o.v !== 1 || !Array.isArray(o.l)) return null;
+  return { sport: String(o.s || ""), book: o.b || null, stake: +o.k || 10, legs: o.l.slice(0, 12).map(x => ({ title: String(x[0]), a: x[1] == null ? null : +x[1], gl: String(x[2] || ""), f: +x[3] || 0.5 })) };
+}
+const shareLink = t => location.origin + location.pathname + "?t=" + encodeTicket(t);
+
+/* Ticket image: 1080x1350 for posts, 1080x1920 for stories */
+async function ticketImage(t, story) {
+  try { await document.fonts.ready; } catch {}
+  const W = 1080, H = story ? 1920 : 1350, c = document.createElement("canvas"); c.width = W; c.height = H;
+  const x = c.getContext("2d"), pr = snapPrice(t);
+  const bg = x.createRadialGradient(W / 2, -200, 100, W / 2, 200, H); bg.addColorStop(0, "#1a2133"); bg.addColorStop(.55, "#0a0d14"); bg.addColorStop(1, "#06080d");
+  x.fillStyle = bg; x.fillRect(0, 0, W, H);
+  const gold = x.createLinearGradient(0, 0, W, 0); gold.addColorStop(0, "#f0d495"); gold.addColorStop(1, "#a9853f");
+  const serif = '"Instrument Serif", Georgia, serif', sans = '"Instrument Sans", system-ui, sans-serif', mono = '"IBM Plex Mono", ui-monospace, monospace';
+  let y = story ? 330 : 110; const L = 90, R = W - 90;
+  x.fillStyle = gold; roundRect(x, L, y - 52, 64, 64, 18); x.fill();
+  x.fillStyle = "#1a1206"; x.font = `400 44px ${serif}`; x.textAlign = "center"; x.fillText("L", L + 32, y - 6);
+  x.textAlign = "left"; x.fillStyle = "#f3f1ea"; x.font = `400 52px ${serif}`; x.fillText("Longshot", L + 88, y);
+  const lw = x.measureText("Longshot ").width; x.fillStyle = "#d8b46a"; x.font = `italic 400 52px ${serif}`; x.fillText("Lab", L + 88 + lw, y);
+  y += 90;
+  x.fillStyle = gold; x.font = `400 64px ${serif}`; x.fillText(`${t.sport} · ${t.legs.length}-leg parlay`, L, y);
+  y += 46; x.fillStyle = "#8b93a5"; x.font = `500 28px ${sans}`; x.fillText((t.book ? bookName(t.book) : "Best prices").toUpperCase(), L, y);
+  y += 50; line(x, L, R, y);
+  y += 70; x.fillStyle = "#5d6578"; x.font = `600 24px ${sans}`; x.fillText("REAL ODDS", L, y); x.textAlign = "right"; x.fillText("PAYS", R, y);
+  y += 96; x.textAlign = "left"; x.fillStyle = "#8b93a5"; x.font = `500 34px ${sans}`; x.fillText("1 in", L, y);
+  x.fillStyle = "#f3f1ea"; x.font = `400 104px ${serif}`; x.fillText(Math.round(pr.oneIn).toLocaleString("en-US"), L + 72, y);
+  x.textAlign = "right"; x.fillStyle = "#f0d495"; x.fillText(money(pr.ret), R, y); x.textAlign = "left";
+  y += 40; x.fillStyle = "#8b93a5"; x.font = `500 28px ${sans}`; x.fillText(`on ${money(t.stake)}`, R - x.measureText(`on ${money(t.stake)}`).width, y);
+  y += 30; line(x, L, R, y);
+  const rowH = story ? 128 : Math.min(118, (H - y - 170) / Math.max(1, t.legs.length));
+  for (const l of t.legs) {
+    y += rowH;
+    x.fillStyle = "#f3f1ea"; x.font = `600 ${rowH > 100 ? 36 : 30}px ${sans}`; x.fillText(fit(x, l.title, R - L - 200), L, y - rowH / 2 + 4);
+    x.fillStyle = "#5d6578"; x.font = `500 ${rowH > 100 ? 26 : 22}px ${sans}`; x.fillText(fit(x, l.gl, R - L - 200), L, y - rowH / 2 + 42);
+    const res = l.r && RES[l.r];
+    x.textAlign = "right"; x.font = `600 36px ${mono}`; x.fillStyle = res ? res.c : "#f3f1ea"; x.fillText(res ? res.t : fmtA(l.a), R, y - rowH / 2 + 18); x.textAlign = "left";
+    x.strokeStyle = "#1a212d"; x.lineWidth = 2; x.beginPath(); x.moveTo(L, y); x.lineTo(R, y); x.stroke();
+  }
+  x.fillStyle = "#5d6578"; x.font = `500 24px ${sans}`; x.textAlign = "center";
+  x.fillText("Made with Longshot Lab · 21+ · Entertainment only · 1-800-GAMBLER", W / 2, H - (story ? 140 : 60));
+  return new Promise(res => c.toBlob(res, "image/png"));
+  function line(x, a, b, yy) { x.strokeStyle = "#222a38"; x.lineWidth = 2; x.beginPath(); x.moveTo(a, yy); x.lineTo(b, yy); x.stroke(); }
+}
+function roundRect(x, a, b, w, h, r) { x.beginPath(); x.moveTo(a + r, b); x.arcTo(a + w, b, a + w, b + h, r); x.arcTo(a + w, b + h, a, b + h, r); x.arcTo(a, b + h, a, b, r); x.arcTo(a, b, a + w, b, r); x.closePath(); }
+function fit(x, s, w) { s = String(s); if (x.measureText(s).width <= w) return s; while (s.length > 3 && x.measureText(s + "…").width > w) s = s.slice(0, -1); return s + "…"; }
+async function shareImage(t, story) {
+  toast("Making image…");
+  const blob = await ticketImage(t, story); if (!blob) return toast("Couldn't make the image.");
+  const file = new File([blob], `longshot-${story ? "story" : "ticket"}.png`, { type: "image/png" });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file] }); return; } catch (e) { if (e && e.name === "AbortError") return; }
+  }
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = file.name; document.body.appendChild(a); a.click(); a.remove();
+  toast("Image saved to Downloads");
 }
 async function copyText(t) {
   try { await navigator.clipboard.writeText(t); toast("Copied"); return true; }
@@ -448,6 +644,62 @@ async function copyText(t) {
 async function shareText(t) {
   if (navigator.share) { try { await navigator.share({ text: t }); return; } catch (e) { if (e && e.name === "AbortError") return; } }
   copyText(t);
+}
+
+/* ---------- grading saved tickets (paid plan: /results) ---------- */
+const RES = { won: { t: "WON", c: "#6fd6a8" }, lost: { t: "LOST", c: "#ef8a8a" }, push: { t: "PUSH", c: "#8b93a5" }, void: { t: "VOID", c: "#8b93a5" }, na: { t: "N/A", c: "#8b93a5" } };
+function migrate(t) {
+  if (!t.sk) t.sk = (SPORTS.find(s => s.l === t.sport) || SPORTS[0]).k;
+  t.legs = t.legs.map(l => l.title ? l : { ...l, kind: l.kind || "ou", title: legTitle({ ...l, kind: l.kind || "ou" }), a: (priceAt(l, t.book) || {}).a ?? null, b: (priceAt(l, t.book) || {}).b ?? null, gl: "", gt: null });
+  return t;
+}
+function ticketState(t) {
+  const rs = t.legs.map(l => l.r);
+  if (rs.includes("lost")) return "lost";
+  if (rs.every(r => r && r !== "lost")) return "won";
+  return "open";
+}
+function settledReturn(t) {
+  let d = 1; for (const l of t.legs) if (l.r === "won" && l.a != null) d *= dec(l.a);
+  return t.stake * d;
+}
+async function gradeAll() {
+  if (S.grading || !S.key) return;
+  const now = Date.now(), jobs = new Map();
+  for (const t of S.saved) {
+    migrate(t);
+    for (const l of t.legs) {
+      if (l.r) continue;
+      const started = l.gt ? Date.parse(l.gt) + 3 * 36e5 < now : t.at + 6 * 36e5 < now;
+      if (!started) continue;
+      const k = t.sk + "|" + l.g; if (!jobs.has(k)) jobs.set(k, { sk: t.sk, g: l.g, m: new Set() }); jobs.get(k).m.add(l.m);
+    }
+  }
+  if (!jobs.size) return;
+  S.grading = true; render();
+  const results = {};
+  await pool([...jobs.values()], 3, async j => {
+    try {
+      const r = await api(`/sports/${j.sk}/events/${j.g}/results`, { markets: [...j.m].join(",") });
+      const map = {};
+      for (const b of r.bookmakers || []) for (const m of b.markets || []) {
+        if (m.period) continue;
+        for (const o of m.outcomes || []) {
+          if (!o.resolution) continue;
+          const x = parseOutcome(m.key, o); if (!x) continue;
+          for (const pk of [x.pk, normName(x.player)]) { const k = legKey(m.key, pk, x.kind, x.line, x.side); if (!map[k]) map[k] = o.resolution; }
+        }
+      }
+      results[j.sk + "|" + j.g] = { final: r.status === "final" || r.status === "expired", map };
+    } catch {}
+  });
+  for (const t of S.saved) for (const l of t.legs) {
+    if (l.r) continue;
+    const R = results[t.sk + "|" + l.g]; if (!R) continue;
+    const r = R.map[legKey(l.m, l.pk, l.kind, l.pt, l.s)] || R.map[legKey(l.m, normName(l.p), l.kind, l.pt, l.s)];
+    if (r) l.r = r; else if (R.final) l.r = "na";
+  }
+  store.set("saved", S.saved); S.grading = false; render();
 }
 let toastT;
 function toast(m) { const el = document.getElementById("toast"); el.textContent = m; el.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => el.hidden = true, 2200); }
@@ -496,15 +748,28 @@ function statusHTML() {
   else if (d) { dot = staleAge() > S.every * 36e5 ? "stale" : ""; txt = `Lines as of ${ago(staleAge())}`; }
   return `<div class="status"><span><i class="dot ${dot}"></i><b>${txt}</b></span>
     ${d ? `<span>${d.legs.length.toLocaleString()} props · ${d.games.length} game${d.games.length === 1 ? "" : "s"}</span>` : ""}
-    ${S.remaining != null ? `<span>${S.remaining} requests left today</span>` : ""}
+    ${S.remaining != null ? `<span>${S.remaining.toLocaleString()} requests left today</span>` : ""}
+    ${S.logProg ? `<span>Checking player history ${S.logProg.done}/${S.logProg.total}</span>` : ""}
     ${S.key && !loading ? `<button class="link" data-act="refresh">Refresh now</button>` : ""}</div>
     ${S.error ? `<p class="err">${esc(S.error)}</p>` : ""}`;
+}
+
+function sharedHTML() {
+  const t = S.shared; if (!t) return "";
+  const pr = snapPrice(t);
+  return `<div class="receipt" style="margin-bottom:16px">
+    <div class="rh"><span class="t">Shared ticket · ${esc(t.sport)}</span><span class="m">${t.legs.length} legs · ${t.book ? esc(bookName(t.book)) : "Best price"}</span></div>
+    <div class="hero-odds"><div><div class="k">Real odds</div><div class="v"><small>1 in</small>${Math.round(pr.oneIn).toLocaleString("en-US")}</div></div>
+      <div class="r"><div class="k">Pays on ${money(t.stake)}</div><div class="v">${money(pr.ret)}</div></div></div>
+    ${t.legs.map(l => `<div class="leg"><span class="who"><b>${esc(l.title)}</b><small>${esc(l.gl)}</small></span><span class="px">${fmtA(l.a)}</span></div>`).join("")}
+    <p class="fine">Prices are from when it was shared. Lines move.</p>
+    <div class="actions"><button class="btn" data-act="unshare">Close shared ticket</button></div></div>`;
 }
 
 function machineHTML() {
   const d = D(); const gm = gameMap();
   const tabs = `<div class="tabs" role="group" aria-label="Sport">${SPORTS.map(s => `<button aria-pressed="${S.sport === s.k}" data-act="sport:${s.k}">${s.l}</button>`).join("")}</div>`;
-  if (!S.key) return tabs + statusHTML() + `<section class="step"><h2>Connect your odds feed</h2>
+  if (!S.key) return sharedHTML() + tabs + statusHTML() + `<section class="step"><h2>Connect your odds feed</h2>
     <p class="hint">Paste your PropLine API key to load live player props from DraftKings, FanDuel and other books. The key is saved only in this browser.</p>
     <button class="btn" data-act="settings">Add API key</button></section>`;
   if (!d) return tabs + statusHTML() + `<div class="empty">${S.loading[S.sport] ? "Pulling today's lines…" : "Tap Refresh now to load lines."}</div>`;
@@ -525,6 +790,8 @@ function machineHTML() {
       <div class="label">Markets</div><div class="chips">${markets.map(m => chip(prettyMarket(m), !f.off.has(m), "mkt:" + m, f.off.has(m) ? "off" : "")).join("")}</div>
       <div class="label">Leg odds</div><div class="chips">${chip("Any", f.odds === "any", "odds:any")}${chip("Safer (55%+)", f.odds === "safer", "odds:safer")}${chip("Longshots (+150 or longer)", f.odds === "long", "odds:long")}</div>
       <label class="row"><span class="grow">Include alt lines</span><input id="sw-alt" type="checkbox" class="switch" data-act="alt" ${f.alt ? "checked" : ""}></label>
+      <label class="row"><span class="grow">Only lines he's hit<br><span class="hint">Alt lines the player has reached at least once this season</span></span><input id="sw-hit" type="checkbox" class="switch" data-act="hit" ${f.hit ? "checked" : ""}></label>
+      <label class="row"><span class="grow">Include scorer and "Yes" props<br><span class="hint">Anytime TD, 2+ hits and similar</span></span><input id="sw-yes" type="checkbox" class="switch" data-act="yes" ${f.yes ? "checked" : ""}></label>
       <label class="row"><span class="grow">Overs only</span><input id="sw-overs" type="checkbox" class="switch" data-act="overs" ${f.overs ? "checked" : ""}></label>` : ""}
   </section>`;
 
@@ -545,7 +812,7 @@ function machineHTML() {
     ${S.book === null ? `<p class="warn">Compare mode uses each leg's best price across books. You can't bet that as one ticket.</p>` : ""}
   </section>`;
 
-  return tabs + statusHTML() + poolSec + buildSec +
+  return sharedHTML() + tabs + statusHTML() + poolSec + buildSec +
     `<button class="lever" data-act="pull" ${pool.length ? "" : "disabled"}>${S.ticket.length ? "Pull again" : "Pull the lever"}</button>` +
     (S.notice ? `<p class="warn">${esc(S.notice)}</p>` : "") +
     (S.ticket.length ? receiptHTML(gm) : "");
@@ -555,10 +822,11 @@ function receiptHTML(gm) {
   const pr = priceTicket(S.ticket, S.stake, S.book);
   const sp = SPORTS.find(s => s.k === S.sport).l;
   const legs = S.ticket.map((l, i) => {
-    const p = priceAt(l, S.book), g = gm[l.g];
+    const p = priceAt(l, S.book), g = gm[l.g], best = priceAt(l, null), nb = Object.keys(l.pr).length, pj = projOf(l);
     return `<button class="leg" data-act="leg:${i}">
-      <span class="who"><b>${esc(legTitle(l))}${S.kept.has(l.id) ? '<span class="tag keep">Kept</span>' : ""}${l.alt ? '<span class="tag alt">Alt</span>' : ""}${l.thin ? '<span class="tag thin">Thin</span>' : ""}</b>
-      <small>${esc(g ? g.label : "")} · ${S.book ? bookName(S.book) : "best: " + bookName(p.b)}</small></span>
+      <span class="who"><b>${esc(legTitle(l))}${S.kept.has(l.id) ? '<span class="tag keep">Kept</span>' : ""}${l.alt && l.kind === "ou" ? '<span class="tag alt">Alt</span>' : ""}${l.thin ? '<span class="tag thin">Thin</span>' : ""}${l.est ? '<span class="tag thin">Est.</span>' : ""}</b>
+      <small>${esc(g ? g.label : "")}${pj != null ? ` · Proj <span class="num">${pj}</span>` : ""}</small>
+      <small>Best ${esc(bookName(best.b))} ${fmtA(best.a)} · ${nb} book${nb === 1 ? "" : "s"}</small></span>
       <span class="px">${fmtA(p && p.a)}</span></button>`;
   }).join("");
   const cutLine = pr.cut >= 0 ? `<span class="lbl">Book's cut</span><span>${pct(pr.cut)}</span>`
@@ -582,22 +850,30 @@ function receiptHTML(gm) {
       ${book ? `<button class="btn primary" data-act="openbook">Copy legs & open ${esc(book.l)}</button>` : ""}
       <button class="btn" data-act="addtop">Add top-rated leg</button>
       <button class="btn" data-act="save">Save</button>
-      <button class="btn" data-act="share">Share</button>
-      <button class="btn" data-act="copy">Copy as text</button>
+      <button class="btn" data-act="share">Share…</button>
     </div>
   </div>`;
 }
 
 function savedHTML() {
-  if (!S.saved.length) return `<h2 class="page-title">Your tickets</h2><div class="empty">Save a ticket from the receipt and it stays here on this phone.</div>`;
-  return `<h2 class="page-title">Your tickets</h2><p class="hint" style="margin-bottom:12px">Saved on this phone. Prices are as of when you saved.</p>` +
+  if (!S.saved.length) return `<h2 class="page-title">Your tickets</h2><div class="empty">Save a ticket from the receipt and it stays here on this phone. Finished games are graded automatically.</div>`;
+  S.saved.forEach(migrate);
+  let w = 0, lo = 0, op = 0, staked = 0, back = 0;
+  for (const t of S.saved) { const s = ticketState(t); if (s === "won") { w++; staked += t.stake; back += settledReturn(t); } else if (s === "lost") { lo++; staked += t.stake; } else op++; }
+  const net = back - staked;
+  return `<h2 class="page-title">Your tickets</h2>
+    <div class="card"><div class="kv">
+      <span>Record</span><b class="num">${w}–${lo}${op ? ` · ${op} open` : ""}</b>
+      <span>Net if played</span><b class="num" style="color:${net >= 0 ? "var(--win)" : "var(--risk)"}">${net >= 0 ? "+" : "−"}${money(Math.abs(net))}</b></div>
+      <div class="row"><span class="hint grow">${S.grading ? "Checking results…" : "Legs are graded against the box score after each game."}</span>${S.key && !S.grading ? `<button class="link" data-act="grade">Check results</button>` : ""}</div></div>` +
     S.saved.map((t, i) => {
-      const pr = priceTicket(t.legs, t.stake, t.book);
+      const pr = snapPrice(t), st = ticketState(t);
+      const badge = st === "won" ? `<span class="tag" style="color:var(--win);border-color:var(--win)">Won</span>` : st === "lost" ? `<span class="tag" style="color:var(--risk);border-color:var(--risk)">Lost</span>` : `<span class="tag">Open</span>`;
       return `<div class="card">
-        <div class="row"><b class="grow">${esc(t.sport)} · ${t.legs.length} legs · ${esc(t.book ? bookName(t.book) : "best prices")}</b><span class="hint">${new Date(t.at).toLocaleDateString()}</span></div>
-        ${t.legs.map(l => { const p = priceAt(l, t.book); return `<div class="hint" style="color:var(--fg)">${esc(legTitle(l))} <span class="num">${fmtA(p && p.a)}</span></div>`; }).join("")}
-        <div class="num" style="color:var(--muted)">${money(t.stake)} → ${money(pr.ret)} · 1 in ${Math.round(pr.oneIn).toLocaleString("en-US")}</div>
-        <div class="actions"><button class="btn" data-act="sshare:${i}">Share</button><button class="btn" data-act="sdel:${i}">Delete</button></div></div>`;
+        <div class="row"><b class="grow">${esc(t.sport)} · ${t.legs.length} legs · ${esc(t.book ? bookName(t.book) : "best prices")} ${badge}</b><span class="hint">${new Date(t.at).toLocaleDateString()}</span></div>
+        ${t.legs.map(l => { const r = l.r && RES[l.r]; return `<div class="row" style="font-size:13.5px"><span class="grow">${esc(l.title)}</span><span class="num" style="color:${r ? r.c : "var(--muted)"}">${r ? r.t : fmtA(l.a)}</span></div>`; }).join("")}
+        <div class="num" style="color:var(--muted);font-size:13px">${money(t.stake)} → ${money(pr.ret)} · 1 in ${Math.round(pr.oneIn).toLocaleString("en-US")}</div>
+        <div class="actions"><button class="btn" data-act="sshare:${i}">Share…</button><button class="btn" data-act="sdel:${i}">Delete</button></div></div>`;
     }).join("");
 }
 
@@ -606,6 +882,10 @@ function learnHTML() {
     ["Is this betting advice?", "No. The machine draws legs from live prices for entertainment and shows how much the book keeps. A well-priced leg can still lose."],
     ["How is a ticket priced?", "Each leg's American odds become a chance to hit. The fair chance comes from the over and under prices with the book's cut removed, using Pinnacle when it has the line and the middle of the other books when it doesn't. Fair chances multiply into the ticket's real odds. The gap between the fair return and the book's return is the book's cut."],
     ["What does Thin mean?", "Only one book had both sides of that line, so its fair price leans on a single book."],
+    ["What does Est. mean?", "Scorer and other Yes props usually have no No side to compare, so the fair price is estimated from the books' Yes prices with a typical cut taken out."],
+    ["What is Proj?", "The stat value the betting market implies for that player, taken from where the over and under are priced evenly across books. It's a read of the market, not a forecast."],
+    ["Only lines he's hit", "With this on, alt lines and 2+ type props are drawn only if the player has reached that number at least once this season, checked against his game log. Players with no games logged yet stay in."],
+    ["How are saved tickets graded?", "After each game, every leg is checked against the official box score: won, lost, push or void. The record and net assume the ticket was played at the saved prices."],
     ["How are legs drawn?", "Legs priced better than fair come up more often, but repeats are dialed down so you don't see the same few legs. One player per ticket, and at most 10 legs from one game."],
     ["Keep, Swap, Remove, Add?", "Keep holds a leg for your next pull. Swap redraws one leg. Remove drops it and keeps that player out until you tap Release. Add top-rated leg adds the best-priced leg left in the sport, ignoring your filters."],
     ["Why pick a sportsbook?", "A parlay has to go on at one book, so the machine only draws legs that book offers and prices the ticket there. Compare all shows each leg's best price across books, which you can't bet as one ticket."],
@@ -631,15 +911,37 @@ function sheetHTML() {
       (alts.length ? alts.map(a => { const p = priceAt(a, S.book); return `<button class="opt" data-act="use:${sh.i}:${esc(a.id)}"><span>${a.s === "O" ? "Over" : "Under"} ${a.pt} ${esc(prettyMarket(a.m))}</span><span class="num">${fmtA(p.a)}</span></button>`; }).join("")
         : `<p class="hint">No other lines for this player.</p>`);
   } else if (sh.type === "card") {
-    const l = S.ticket[sh.i]; const g = gameMap()[l.g];
+    const l = S.ticket[sh.i]; const g = gameMap()[l.g], pj = projOf(l), vals = statValues(S.sport, l), st = statFor(S.sport, l.m);
+    let hist = "";
+    if (st) {
+      if (!vals) hist = `<p class="hint">${S.cardLoading ? "Loading game log…" : "No game log yet."}</p>`;
+      else if (!vals.length) hist = `<p class="hint">No games logged this season yet.</p>`;
+      else {
+        const thr = l.kind === "yes" ? l.pt - 0.5 : l.pt;
+        const hit = v => l.s === "U" ? v < thr : v > thr;
+        const last = vals.slice(0, 10), nHit = last.filter(x => hit(x.v)).length;
+        hist = `<div class="kv"><span>Hit in last ${last.length}</span><b class="num">${nHit} of ${last.length}</b>
+          <span>Season average</span><b class="num">${(vals.reduce((a, x) => a + x.v, 0) / vals.length).toFixed(1)}</b></div>
+          <div class="chips">${last.map(x => `<span class="chip" style="border-color:${hit(x.v) ? "var(--win)" : "var(--line)"};color:${hit(x.v) ? "var(--win)" : "var(--muted)"}" title="${esc(x.opp)}">${x.v}</span>`).join("")}</div>
+          <p class="hint">Most recent first. Green cleared this line.</p>`;
+      }
+    }
     body = `<h3>${esc(l.p)}</h3><p class="hint" style="margin:0">${esc(g ? g.label + " · " + dayOf(g.t) : "")}</p>
-      <div class="kv"><span>Leg</span><b>${l.s === "O" ? "Over" : "Under"} ${l.pt} ${esc(prettyMarket(l.m))}</b>
-      <span>Fair chance</span><b class="num">${pct(l.f)}</b>
-      <span>Fair price</span><b class="num">${fmtA(Math.round(l.f >= .5 ? -l.f / (1 - l.f) * 100 : (1 - l.f) / l.f * 100))}</b>
-      <span>Edge at ${S.book ? esc(bookName(S.book)) : "best price"}</span><b class="num">${(edge(l, S.book) * 100).toFixed(1)}%</b>
-      <span>Books with both sides</span><b class="num">${l.n}</b></div>
+      <div class="kv"><span>Leg</span><b>${esc(legSide(l))}</b>
+      ${pj != null ? `<span>Market projection</span><b class="num">${pj}</b>` : ""}
+      <span>Fair chance${l.est ? " (est.)" : ""}</span><b class="num">${pct(l.f)}</b>
+      <span>Fair price</span><b class="num">${fmtA(fairAmerican(l.f))}</b>
+      <span>Edge at ${S.book ? esc(bookName(S.book)) : "best price"}</span><b class="num">${(edge(l, S.book) * 100).toFixed(1)}%</b></div>
+      ${st ? `<div class="label">${esc(prettyMarket(l.m))} this season</div>${hist}` : ""}
       <div class="label">Price by book</div>
-      <div class="kv">${Object.entries(l.pr).map(([b, a]) => `<span>${esc(bookName(b))}</span><b class="num">${fmtA(a)}</b>`).join("")}</div>`;
+      <div class="kv">${Object.entries(l.pr).sort((a, b) => dec(b[1]) - dec(a[1])).map(([b, a]) => `<span>${esc(bookName(b))}</span><b class="num">${fmtA(a)}</b>`).join("")}</div>`;
+  } else if (sh.type === "share") {
+    body = `<h3>Share ticket</h3>
+      <button class="opt" data-act="img:post"><span>Share image</span><span class="hint">Feed size</span></button>
+      <button class="opt" data-act="img:story"><span>Share story image</span><span class="hint">Tall, for stories</span></button>
+      <button class="opt" data-act="link"><span>Copy share link</span><span class="hint">Opens this ticket</span></button>
+      <button class="opt" data-act="stext"><span>Share as text</span></button>
+      <button class="opt" data-act="ctext"><span>Copy as text</span></button>`;
   } else if (sh.type === "text") {
     body = `<h3>Copy this ticket</h3><p class="hint">Long-press the text and choose Copy.</p><textarea id="copy-area" class="text" rows="9" readonly>${esc(sh.text)}</textarea>`;
   } else if (sh.type === "settings") {
@@ -652,7 +954,7 @@ function sheetHTML() {
       <p class="hint">Your Cloudflare Worker link. It passes requests to PropLine so your browser can read them.</p>
       <div class="label">Refresh lines every</div>
       <div class="chips">${[1, 3, 6].map(h => chip(h + " hr", S.every === h, "every:" + h)).join("")}</div>
-      <p class="hint">Each refresh of one sport uses about 3 to 18 requests, depending on how many games are on. The free plan allows 1,000 a day.</p>
+      <p class="hint">A refresh of one sport uses about 5 to 35 requests. Checking player history uses one request per player, about once a day. Your remaining requests show at the top of the Machine tab.</p>
       <button class="btn gold" data-act="savekey">Save & load lines</button>
       ${S.key ? `<button class="btn" data-act="clearkey">Remove key</button>` : ""}`;
   }
@@ -670,12 +972,12 @@ document.addEventListener("click", e => {
   const f = S.f;
   switch (act) {
     case "age": S.age = true; store.set("age", true); render(); maybeRefresh(); return;
-    case "tab": S.tab = arg; window.scrollTo(0, 0); break;
+    case "tab": S.tab = arg; window.scrollTo(0, 0); if (arg === "saved") setTimeout(gradeAll, 0); break;
     case "settings": S.sheet = { type: "settings" }; break;
     case "close": S.sheet = null; break;
     case "refresh": loadSport(S.sport); return;
     case "sport": S.sport = arg; store.set("sport", arg); S.ticket = []; S.kept.clear(); S.removed.clear(); S.notice = ""; S.error = "";
-      f.days.clear(); f.games.clear(); f.off.clear(); render(); maybeRefresh(); return;
+      f.days.clear(); f.games.clear(); f.off.clear(); render(); maybeRefresh(); ensureLogs(); return;
     case "pool": f.open = !f.open; break;
     case "day": f.days.has(arg) ? f.days.delete(arg) : f.days.add(arg); f.games.clear(); break;
     case "game": f.games.has(arg) ? f.games.delete(arg) : f.games.add(arg); break;
@@ -693,23 +995,36 @@ document.addEventListener("click", e => {
     case "swap": swap(+arg); return;
     case "remove": removeLeg(+arg); return;
     case "alts": S.sheet = { type: "alts", i: +arg }; break;
-    case "card": S.sheet = { type: "card", i: +arg }; break;
+    case "card": {
+      S.sheet = { type: "card", i: +arg }; const l = S.ticket[+arg], sk = S.sport;
+      const lg = S.logs[sk][l.pk];
+      if (statFor(sk, l.m) && (!lg || Date.now() - lg.at > LOG_TTL) && S.key) {
+        S.cardLoading = true;
+        fetchLog(sk, l).catch(() => {}).finally(() => { S.cardLoading = false; persistLogs(sk); if (S.sheet && S.sheet.type === "card") render(); });
+      }
+      break;
+    }
     case "use": { const [i, ...id] = rest; const nl = D().legs.find(l => l.id === id.join(":")); if (nl) S.ticket = S.ticket.map((x, j) => j === +i ? nl : x); S.sheet = null; break; }
     case "release": S.removed.delete(arg); break;
     case "addtop": addTop(); return;
     case "save":
-      S.saved = [{ at: Date.now(), sport: SPORTS.find(s => s.k === S.sport).l, book: S.book, stake: S.stake, legs: S.ticket }, ...S.saved].slice(0, 50);
+      S.saved = [curSnap(), ...S.saved].slice(0, 100);
       store.set("saved", S.saved); toast("Ticket saved"); break;
-    case "share": shareText(ticketText(S.ticket, S.stake, S.book)); return;
-    case "copy": copyText(ticketText(S.ticket, S.stake, S.book)); return;
+    case "share": S.sheet = { type: "share", src: curSnap() }; break;
+    case "img": { const t = S.sheet.src; S.sheet = null; render(); shareImage(t, arg === "story"); return; }
+    case "link": { const t = S.sheet.src; S.sheet = null; render(); copyText(shareLink(t)); return; }
+    case "stext": { const t = S.sheet.src; S.sheet = null; render(); shareText(snapText(t)); return; }
+    case "ctext": { const t = S.sheet.src; S.sheet = null; render(); copyText(snapText(t)); return; }
+    case "unshare": S.shared = null; history.replaceState(null, "", location.pathname); break;
+    case "grade": gradeAll(); return;
     case "openbook": {
-      const t = ticketText(S.ticket, S.stake, S.book);
+      const t = snapText(curSnap());
       const link = (D().links[S.ticket[0].g] || {})[S.book];
       const url = link || BOOKS.find(b => b.k === S.book).u;
       navigator.clipboard?.writeText(t).then(() => toast("Legs copied"), () => {});
       window.open(url, "_blank", "noopener"); return;
     }
-    case "sshare": { const t = S.saved[+arg]; shareText(ticketText(t.legs, t.stake, t.book)); return; }
+    case "sshare": S.sheet = { type: "share", src: migrate(S.saved[+arg]) }; break;
     case "sdel": S.saved.splice(+arg, 1); store.set("saved", S.saved); break;
     case "every": S.every = +arg; store.set("every", S.every); break;
     case "savekey": {
@@ -728,6 +1043,8 @@ document.addEventListener("change", e => {
   const a = e.target.dataset.act;
   if (a === "alt") { S.f.alt = e.target.checked; render(); }
   if (a === "overs") { S.f.overs = e.target.checked; render(); }
+  if (a === "yes") { S.f.yes = e.target.checked; render(); }
+  if (a === "hit") { S.f.hit = e.target.checked; store.set("hit", S.f.hit); render(); ensureLogs(); }
 });
 document.addEventListener("input", e => {
   const k = e.target.dataset.input; if (!k) return;
@@ -737,8 +1054,10 @@ document.addEventListener("input", e => {
   document.querySelectorAll(`[data-act^="${k}:"]`).forEach(c => c.setAttribute("aria-pressed", "false"));
 });
 
+try { const q = new URLSearchParams(location.search).get("t"); if (q) S.shared = decodeTicket(q); } catch {}
 render();
 maybeRefresh();
+ensureLogs();
 </script>
 </body>
 </html>
