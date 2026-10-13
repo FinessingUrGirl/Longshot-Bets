@@ -124,7 +124,7 @@ details p{color:var(--muted);margin:6px 0 4px}
 <script>
 "use strict";
 /* ---------- config ---------- */
-const API = "https://api.prop-line.com/v1";
+const DIRECT = "https://api.prop-line.com";
 const SPORTS = [
   { k: "football_nfl", l: "NFL", days: 8 },
   { k: "basketball_nba", l: "NBA", days: 3 },
@@ -171,6 +171,7 @@ const bookName = k => (BOOKS.find(b => b.k === k) || { l: k }).l;
 const S = {
   age: store.get("age", false),
   key: store.get("key", ""),
+  relay: store.get("relay", ""),
   every: store.get("every", 3),
   tab: "machine",
   sport: store.get("sport", "football_nfl"),
@@ -186,12 +187,13 @@ for (const sp of SPORTS) { const d = store.get("data_" + sp.k, null); if (d) S.d
 
 /* ---------- API ---------- */
 async function api(path, params = {}) {
-  const u = new URL(API + path);
+  const base = (S.relay || DIRECT).replace(/\/+$/, "");
+  const u = new URL(base + "/v1" + path);
   for (const [k, v] of Object.entries(params)) if (v != null && v !== "") u.searchParams.set(k, v);
   u.searchParams.set("apiKey", S.key);
   let r;
   try { r = await fetch(u.toString()); }
-  catch { throw new Error("Couldn't reach PropLine from this browser. Check your connection, then try Refresh."); }
+  catch { throw new Error(S.relay ? "Couldn't reach your relay. Check the relay link in Settings, then tap Refresh now." : "PropLine blocks direct calls from web pages. Add your relay link in Settings, then tap Refresh now."); }
   const rem = r.headers.get("X-Daily-Remaining") || r.headers.get("RateLimit-Remaining");
   if (rem != null) { S.remaining = Number(rem); store.set("remaining", S.remaining); }
   if (r.status === 401 || r.status === 403) throw new Error("PropLine didn't accept that API key. Open Settings and paste it again.");
@@ -618,6 +620,9 @@ function sheetHTML() {
       <label class="label" for="key-input">PropLine API key</label>
       <input id="key-input" class="text" type="password" autocomplete="off" placeholder="Paste your key" value="${esc(S.key)}">
       <p class="hint">Saved only in this browser on this phone. Never shared.</p>
+      <label class="label" for="relay-input">Relay link</label>
+      <input id="relay-input" class="text" type="url" autocomplete="off" placeholder="https://longshot-relay.yourname.workers.dev" value="${esc(S.relay)}">
+      <p class="hint">Your Cloudflare Worker link. It passes requests to PropLine so your browser can read them.</p>
       <div class="label">Refresh lines every</div>
       <div class="chips">${[1, 3, 6].map(h => chip(h + " hr", S.every === h, "every:" + h)).join("")}</div>
       <p class="hint">Each refresh of one sport uses about 3 to 18 requests, depending on how many games are on. The free plan allows 1,000 a day.</p>
@@ -683,7 +688,8 @@ document.addEventListener("click", e => {
     case "savekey": {
       const v = document.getElementById("key-input").value.trim();
       if (!v) { toast("Paste your key first"); return; }
-      S.key = v; store.set("key", v); S.sheet = null; S.error = ""; render(); loadSport(S.sport); return;
+      S.key = v; store.set("key", v);
+      S.relay = document.getElementById("relay-input").value.trim(); store.set("relay", S.relay); S.sheet = null; S.error = ""; render(); loadSport(S.sport); return;
     }
     case "clearkey": S.key = ""; store.set("key", ""); S.sheet = null; break;
   }
