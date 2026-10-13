@@ -58,7 +58,10 @@ section.step{background:linear-gradient(180deg,var(--surface) 0%,var(--bg-2) 100
 .chips{display:flex;flex-wrap:wrap;gap:6px}
 .chip{background:transparent;border:1px solid var(--line);border-radius:999px;padding:6px 13px;font-size:13px;color:var(--muted);transition:border-color .15s,color .15s,background .15s}
 .chip[aria-pressed=true]{border-color:color-mix(in srgb,var(--gold) 70%,transparent);color:var(--gold-hi);background:color-mix(in srgb,var(--gold) 9%,transparent)}
-.chip.off{opacity:.4;text-decoration:line-through}
+.chip.off{opacity:.4}
+.chip.off{text-decoration:none} .chip.off>:first-child{text-decoration:line-through}
+.chip .cnt{font-family:var(--mono);font-size:11px;font-variant-numeric:tabular-nums;margin-left:7px;padding:1px 6px;border-radius:999px;background:color-mix(in srgb,var(--fg) 8%,transparent);color:var(--muted)}
+.chip[aria-pressed=true] .cnt{background:color-mix(in srgb,var(--gold) 18%,transparent);color:var(--gold-hi)}
 .chip.pay{display:grid;justify-items:center;gap:1px;padding:7px 12px 6px;border-radius:14px;min-width:76px}
 .chip.pay small{font-family:var(--mono);font-size:10.5px;color:var(--faint);font-variant-numeric:tabular-nums}
 .chip.pay[aria-pressed=true] small{color:var(--gold)}
@@ -191,10 +194,10 @@ const median = xs => { const s = [...xs].sort((a, b) => a - b); const m = s.leng
 const prettyMarket = k => {
   k = k.replace(/_?\d+plus_?/, "_");
   if (/anytime_td|anytime_touchdown/.test(k)) return "Anytime TD";
-  const map = { pass_yds: "Pass Yds", rush_yds: "Rush Yds", reception_yds: "Rec Yds", rec_yds: "Rec Yds", pass_tds: "Pass TDs", pass_attempts: "Pass Att", pass_completions: "Completions", hits_runs_rbis: "H+R+RBI", points_rebounds_assists: "Pts+Reb+Ast", shots_on_goal: "Shots on Goal" };
+  const map = { pass_rush_yds: "Pass + Rush Yds", rush_reception_yds: "Rush + Rec Yds", rush_rec_yds: "Rush + Rec Yds", reception_longest: "Longest Reception", rush_longest: "Longest Rush", pass_longest_completion: "Longest Completion", longest_completion: "Longest Completion", pass_interceptions: "Interceptions", rush_attempts: "Rush Attempts", pass_yds: "Pass Yds", rush_yds: "Rush Yds", reception_yds: "Rec Yds", rec_yds: "Rec Yds", pass_tds: "Pass TDs", pass_attempts: "Pass Att", pass_completions: "Completions", hits_runs_rbis: "H+R+RBI", points_rebounds_assists: "Pts+Reb+Ast", shots_on_goal: "Shots on Goal" };
   let s = k.replace(/^_+|_+$/g, "").replace(/^(player|batter|pitcher|goalie)_/, "");
   if (map[s]) return map[s];
-  return s.split("_").map(w => w.length <= 3 && /^(yds|tds|rbi|sog)$/.test(w) ? w.toUpperCase() : w[0].toUpperCase() + w.slice(1)).join(" ");
+  return s.split("_").map(w => /^(tds|rbi|sog)$/.test(w) ? w.toUpperCase() : w === "yds" ? "Yds" : w[0].toUpperCase() + w.slice(1)).join(" ");
 };
 const bookName = k => (BOOKS.find(b => b.k === k) || { l: k }).l;
 
@@ -472,14 +475,14 @@ function D() { return S.data[S.sport] || null; }
 function gameMap() { const m = {}; for (const g of (D() || {}).games || []) m[g.id] = g; return m; }
 const dayOf = t => new Date(t).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
 
-function poolLegs() {
+function poolLegs(skip) {
   const d = D(); if (!d) return [];
   const gm = gameMap(); const f = S.f;
   return d.legs.filter(l => {
     const g = gm[l.g]; if (!g) return false;
     if (f.days.size && !f.days.has(dayOf(g.t))) return false;
-    if (f.games.size && !f.games.has(l.g)) return false;
-    if (f.off.has(l.m)) return false;
+    if (skip !== "g" && f.games.size && !f.games.has(l.g)) return false;
+    if (skip !== "m" && f.off.has(l.m)) return false;
     if (!f.alt && l.alt && l.kind === "ou") return false;
     if (!f.yes && l.kind === "yes") return false;
     if (f.overs && l.s === "U") return false;
@@ -731,6 +734,7 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) mayb
 
 /* ---------- render ---------- */
 const ago = ms => { const m = Math.round(ms / 6e4); return m < 1 ? "just now" : m < 60 ? m + " min ago" : Math.round(m / 60) + " hr ago"; };
+const countChip = (label, n, on, act, extra = "") => `<button class="chip ${extra}" aria-pressed="${on}" data-act="${act}"><span>${esc(label)}</span><span class="cnt">${n.toLocaleString()}</span></button>`;
 const chip = (label, on, act, extra = "") => `<button class="chip ${extra}" aria-pressed="${on}" data-act="${act}">${esc(label)}</button>`;
 
 function render() {
@@ -793,7 +797,12 @@ function machineHTML() {
   const pool = poolLegs();
   const pst = payoutStats(pool);
   const days = [...new Set(d.games.map(g => dayOf(g.t)))];
-  const markets = [...new Set(d.legs.map(l => l.m))].sort();
+  const markets = [...new Set(d.legs.map(l => l.m))].sort((a, b) => prettyMarket(a).localeCompare(prettyMarket(b)));
+  const mCount = {}, gCount = {};
+  if (S.f.open) {
+    for (const l of poolLegs("m")) mCount[l.m] = (mCount[l.m] || 0) + 1;
+    for (const l of poolLegs("g")) gCount[l.g] = (gCount[l.g] || 0) + 1;
+  }
   const f = S.f;
   const poolSec = `<section class="step">
     <div class="stephead"><span class="n">01</span><h2>Your pool</h2><button class="link" data-act="pool">${f.open ? "Done" : "Customize"}</button></div>
@@ -801,8 +810,8 @@ function machineHTML() {
     ${f.open ? `
       <div class="label">Days</div><div class="chips">${days.map(x => chip(x, f.days.has(x), "day:" + x)).join("")}</div>
       <div class="label">Games <span class="hint">(none picked = all)</span></div>
-      <div class="chips">${d.games.filter(g => !f.days.size || f.days.has(dayOf(g.t))).map(g => chip(g.label, f.games.has(g.id), "game:" + g.id)).join("")}</div>
-      <div class="label">Markets</div><div class="chips">${markets.map(m => chip(prettyMarket(m), !f.off.has(m), "mkt:" + m, f.off.has(m) ? "off" : "")).join("")}</div>
+      <div class="chips">${d.games.filter(g => !f.days.size || f.days.has(dayOf(g.t))).map(g => countChip(g.label, gCount[g.id] || 0, f.games.has(g.id), "game:" + g.id)).join("")}</div>
+      <div class="label">Markets</div><div class="chips">${markets.map(m => countChip(prettyMarket(m), mCount[m] || 0, !f.off.has(m), "mkt:" + m, f.off.has(m) ? "off" : "")).join("")}</div>
       <div class="label">Leg odds</div><div class="chips">${chip("Any", f.odds === "any", "odds:any")}${chip("Safer (55%+)", f.odds === "safer", "odds:safer")}${chip("Longshots (+150 or longer)", f.odds === "long", "odds:long")}</div>
       <label class="row"><span class="grow">Include alt lines</span><input id="sw-alt" type="checkbox" class="switch" data-act="alt" ${f.alt ? "checked" : ""}></label>
       <label class="row"><span class="grow">Only lines he's hit<br><span class="hint">Alt lines the player has reached at least once this season</span></span><input id="sw-hit" type="checkbox" class="switch" data-act="hit" ${f.hit ? "checked" : ""}></label>
