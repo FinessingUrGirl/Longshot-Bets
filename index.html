@@ -65,6 +65,9 @@ section.step{background:linear-gradient(180deg,var(--surface) 0%,var(--bg-2) 100
 .chip.pay{display:grid;justify-items:center;gap:1px;padding:7px 12px 6px;border-radius:14px;min-width:76px}
 .chip.pay small{font-family:var(--mono);font-size:10.5px;color:var(--faint);font-variant-numeric:tabular-nums}
 .chip.pay[aria-pressed=true] small{color:var(--gold)}
+.chip.pay.no{opacity:.5}
+.chip.pay.no[aria-pressed=true]{opacity:1;border-color:color-mix(in srgb,var(--risk) 70%,transparent);background:color-mix(in srgb,var(--risk) 8%,transparent);color:var(--fg)}
+.chip.pay.no[aria-pressed=true] small{color:var(--risk)}
 .row{display:flex;align-items:center;gap:10px}
 .row .grow{flex:1;min-width:0;color:var(--fg)}
 .switch{appearance:none;width:40px;height:23px;border-radius:999px;background:var(--line);position:relative;flex:none;transition:background .2s;margin:0}
@@ -505,14 +508,38 @@ function payoutStats(pool) {
   if (!ds.length) return null;
   return { d: Math.max(1.15, median(ds)), r: median(rs) };
 }
-function payoutOdds(st, target) {
-  if (!st || !(target > S.stake)) return null;
+const maxLegsCap = () => S.maxLegs || 10;
+/* Biggest return any allowed ticket could pay: the longest-priced legs, one per player,
+   at most 10 per game, up to the max legs setting. */
+function maxReturn(pool) {
+  const kept = S.ticket.filter(l => S.kept.has(l.id));
+  const players = new Set(kept.map(l => l.pk)), per = {}; let d = 1, n = 0;
+  for (const l of kept) { const p = priceAt(l, S.book); if (p) { d *= dec(p.a); n++; per[l.g] = (per[l.g] || 0) + 1; } }
+  const sorted = pool.map(l => [l, dec(priceAt(l, S.book).a)]).sort((a, b) => b[1] - a[1]);
+  for (const [l, x] of sorted) {
+    if (n >= maxLegsCap()) break;
+    if (players.has(l.pk) || S.removed.has(l.pk) || (per[l.g] || 0) >= MAX_PER_GAME) continue;
+    players.add(l.pk); per[l.g] = (per[l.g] || 0) + 1; d *= x; n++;
+  }
+  return n >= 2 ? S.stake * d : 0;
+}
+function payoutOdds(st, target, maxRet) {
+  if (!st || target > maxRet) return null;
+  if (!(target > S.stake)) return 1;
   const mult = target / S.stake;
-  const n = Math.min(S.maxLegs || 12, Math.max(2, Math.round(Math.log(mult) / Math.log(st.d))));
+  const n = Math.min(maxLegsCap(), Math.max(2, Math.round(Math.log(mult) / Math.log(st.d))));
   return mult / Math.pow(st.r, n);
 }
-const oddsLabel = x => x == null ? "" : x < 1.05 ? "likely" : "1 in " + (x < 10 ? x.toFixed(1) : Math.round(x).toLocaleString("en-US"));
+const oddsLabel = x => x == null ? "--" : x < 1.05 ? "likely" : "1 in " + (x < 10 ? x.toFixed(1) : Math.round(x).toLocaleString("en-US"));
 
+function refreshLever() {
+  const lv = document.getElementById("lever"); if (!lv || S.byLegs) return;
+  const pool = poolLegs(), mr = maxReturn(pool), blocked = S.target > mr;
+  lv.disabled = pool.length < 2 || blocked;
+  lv.textContent = blocked ? "Payout out of reach" : S.ticket.length ? "Pull again" : "Pull the lever";
+  const note = document.getElementById("lever-note"); if (note) note.hidden = !blocked;
+}
+const customOddsText = (o, v) => o == null ? `Custom ${money(v)}: can't be reached with these settings` : `Custom ${money(v)}: about ${oddsLabel(o)} to hit`;
 function weight(l) {
   const e = Math.max(-0.25, Math.min(0.3, edge(l, S.book)));
   return Math.max(0.15, 1 + 6 * e) / (1 + (S.drawn[l.id] || 0));
@@ -522,27 +549,28 @@ function eligible(pool, cur) {
   for (const l of cur) per[l.g] = (per[l.g] || 0) + 1;
   return pool.filter(l => !players.has(l.pk) && !S.removed.has(l.pk) && (per[l.g] || 0) < MAX_PER_GAME);
 }
-function pick(pool, cur) {
+function pick(pool, cur, tilt = 0) {
   const c = eligible(pool, cur); if (!c.length) return null;
-  const w = c.map(weight); let r = Math.random() * w.reduce((a, b) => a + b, 0);
+  const w = tilt ? c.map(l => weight(l) * Math.pow(dec(priceAt(l, S.book).a), tilt)) : c.map(weight); let r = Math.random() * w.reduce((a, b) => a + b, 0);
   for (let i = 0; i < c.length; i++) { r -= w[i]; if (r <= 0) return c[i]; }
   return c[c.length - 1];
 }
-function fill(pool, start, n) { const out = [...start]; while (out.length < n) { const l = pick(pool, out); if (!l) break; out.push(l); } return out; }
+function fill(pool, start, n, tilt = 0) { const out = [...start]; while (out.length < n) { const l = pick(pool, out, tilt); if (!l) break; out.push(l); } return out; }
 function commit(ls) { for (const l of ls) S.drawn[l.id] = (S.drawn[l.id] || 0) + 1; }
 
 function pull() {
   const pool = poolLegs();
   if (!pool.length) { S.notice = "No legs match these filters."; return render(); }
+  if (!S.byLegs && S.target > maxReturn(pool)) { S.notice = "That payout can't be reached with these settings."; return render(); }
   const kept = S.ticket.filter(l => S.kept.has(l.id));
   let res;
   if (S.byLegs) res = fill(pool, kept, Math.max(S.legN, kept.length));
   else {
-    const maxN = Math.max(S.maxLegs || 6, 2, kept.length), minN = Math.max(2, kept.length);
+    const maxN = Math.max(maxLegsCap(), 2, kept.length), minN = Math.max(2, kept.length);
     let best = null, bestP = -1, close = null, closeR = -1;
     for (let i = 0; i < 400; i++) {
       const n = minN + Math.floor(Math.random() * (maxN - minN + 1));
-      const t = fill(pool, kept, n); if (t.length < 2) continue;
+      const t = fill(pool, kept, n, (i % 4) * 0.8); if (t.length < 2) continue;
       const pr = priceTicket(t, S.stake, S.book);
       if (pr.ret >= S.target) { if (pr.f > bestP) { best = t; bestP = pr.f; } }
       else if (pr.ret > closeR) { close = t; closeR = pr.ret; }
@@ -796,6 +824,8 @@ function machineHTML() {
 
   const pool = poolLegs();
   const pst = payoutStats(pool);
+  const maxRet = S.byLegs ? Infinity : maxReturn(pool);
+  const blocked = !S.byLegs && S.target > maxRet;
   const days = [...new Set(d.games.map(g => dayOf(g.t)))];
   const markets = [...new Set(d.legs.map(l => l.m))].sort((a, b) => prettyMarket(a).localeCompare(prettyMarket(b)));
   const mCount = {}, gCount = {};
@@ -825,11 +855,11 @@ function machineHTML() {
     ${S.byLegs ? `<div class="label">Legs</div><div class="chips">${[2, 3, 4, 5, 6, 8, 10].map(n => chip(String(n), S.legN === n, "legn:" + n)).join("")}</div>`
     : `<div class="label">Pays at least</div>
        <div class="chips">${[[100, "$100"], [250, "$250"], [500, "$500"], [1000, "$1K"], [2500, "$2.5K"], [10000, "$10K"], [100000, "$100K"]].map(([v, t]) => {
-         const o = payoutOdds(pst, v);
-         return `<button class="chip pay" aria-pressed="${S.target === v}" data-act="target:${v}">${t}<small>${o == null ? "—" : oddsLabel(o)}</small></button>`; }).join("")}</div>
+         const o = payoutOdds(pst, v, maxRet);
+         return `<button class="chip pay${o == null ? " no" : ""}" aria-pressed="${S.target === v}" data-act="target:${v}">${t}<small>${oddsLabel(o)}</small></button>`; }).join("")}</div>
        <input id="custom-target" class="text" inputmode="numeric" placeholder="Custom payout, e.g. 750" data-input="target">
-       <p class="hint" id="custom-odds">${[100, 250, 500, 1000, 2500, 10000, 100000].includes(S.target) ? "" : `Custom ${money(S.target)}: about ${oddsLabel(payoutOdds(pst, S.target))} to hit`}</p>
-       <div class="label">Max legs</div><div class="chips">${chip("Any", S.maxLegs == null, "maxl:any")}${[3, 4, 5, 6].map(n => chip(String(n), S.maxLegs === n, "maxl:" + n)).join("")}</div>
+       <p class="hint" id="custom-odds">${[100, 250, 500, 1000, 2500, 10000, 100000].includes(S.target) ? "" : customOddsText(payoutOdds(pst, S.target, maxRet), S.target)}</p>
+       <div class="label">Max legs</div><div class="chips">${chip("Any (up to 10)", S.maxLegs == null, "maxl:any")}${[3, 4, 5, 6, 8].map(n => chip(String(n), S.maxLegs === n, "maxl:" + n)).join("")}</div>
        <p class="hint">Under each amount: rough odds of hitting a ticket that pays it on your ${money(S.stake)} stake at ${S.book ? esc(bookName(S.book)) : "best prices"}. Pull to see the exact odds.</p>`}
     <div class="label">Stake</div>
     <div class="chips">${[5, 10, 25, 50, 100].map(v => chip("$" + v, S.stake === v, "stake:" + v)).join("")}</div>
@@ -840,7 +870,8 @@ function machineHTML() {
   </section>`;
 
   return sharedHTML() + tabs + statusHTML() + poolSec + buildSec +
-    `<button class="lever" data-act="pull" ${pool.length ? "" : "disabled"}>${S.ticket.length ? "Pull again" : "Pull the lever"}</button>` +
+    `<button class="lever" id="lever" data-act="pull" ${pool.length >= 2 && !blocked ? "" : "disabled"}>${blocked ? "Payout out of reach" : S.ticket.length ? "Pull again" : "Pull the lever"}</button>` +
+    (blocked ? `<p class="warn" id="lever-note">No ticket can pay ${money(S.target)} on a ${money(S.stake)} stake with these settings${maxRet ? ` (most possible: ${money(maxRet)})` : ""}. Lower the payout, raise the stake, or allow more legs.</p>` : "") +
     (S.notice ? `<p class="warn">${esc(S.notice)}</p>` : "") +
     (S.ticket.length ? receiptHTML(gm) : "");
 }
@@ -1072,7 +1103,8 @@ document.addEventListener("input", e => {
   const k = e.target.dataset.input; if (!k) return;
   const v = parseFloat(e.target.value.replace(/[^0-9.]/g, ""));
   if (!(v > 0)) return;
-  if (k === "target") { S.target = v; const el = document.getElementById("custom-odds"); if (el) el.textContent = `Custom ${money(v)}: about ${oddsLabel(payoutOdds(payoutStats(poolLegs()), v))} to hit`; } else S.stake = v;
+  if (k === "stake") { S.stake = v; refreshLever(); document.querySelectorAll(`[data-act^="stake:"]`).forEach(c => c.setAttribute("aria-pressed", "false")); return; }
+  if (k === "target") { S.target = v; const el = document.getElementById("custom-odds"); if (el) { const pl = poolLegs(); el.textContent = customOddsText(payoutOdds(payoutStats(pl), v, maxReturn(pl)), v); } refreshLever(); } else S.stake = v;
   document.querySelectorAll(`[data-act^="${k}:"]`).forEach(c => c.setAttribute("aria-pressed", "false"));
 });
 
