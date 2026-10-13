@@ -59,6 +59,9 @@ section.step{background:linear-gradient(180deg,var(--surface) 0%,var(--bg-2) 100
 .chip{background:transparent;border:1px solid var(--line);border-radius:999px;padding:6px 13px;font-size:13px;color:var(--muted);transition:border-color .15s,color .15s,background .15s}
 .chip[aria-pressed=true]{border-color:color-mix(in srgb,var(--gold) 70%,transparent);color:var(--gold-hi);background:color-mix(in srgb,var(--gold) 9%,transparent)}
 .chip.off{opacity:.4;text-decoration:line-through}
+.chip.pay{display:grid;justify-items:center;gap:1px;padding:7px 12px 6px;border-radius:14px;min-width:76px}
+.chip.pay small{font-family:var(--mono);font-size:10.5px;color:var(--faint);font-variant-numeric:tabular-nums}
+.chip.pay[aria-pressed=true] small{color:var(--gold)}
 .row{display:flex;align-items:center;gap:10px}
 .row .grow{flex:1;min-width:0;color:var(--fg)}
 .switch{appearance:none;width:40px;height:23px;border-radius:999px;background:var(--line);position:relative;flex:none;transition:background .2s;margin:0}
@@ -150,7 +153,7 @@ details p{color:var(--muted);margin:8px 0 2px}
 <script>
 "use strict";
 /* ---------- config ---------- */
-const DIRECT = "https://api.prop-line.com";
+const PUBLIC_RELAY = "https://longshotbets.erikguerrero1998.workers.dev";
 const SPORTS = [
   { k: "football_nfl", l: "NFL", days: 8 },
   { k: "basketball_nba", l: "NBA", days: 3 },
@@ -198,8 +201,7 @@ const bookName = k => (BOOKS.find(b => b.k === k) || { l: k }).l;
 /* ---------- state ---------- */
 const S = {
   age: store.get("age", false),
-  key: store.get("key", ""),
-  relay: store.get("relay", ""),
+  relay: store.get("relay", "") || PUBLIC_RELAY,
   every: store.get("every", 3),
   tab: "machine",
   sport: store.get("sport", "football_nfl"),
@@ -208,7 +210,7 @@ const S = {
   byLegs: true, legN: 4, target: 1000, maxLegs: null, stake: 10,
   ticket: [], kept: new Set(), removed: new Set(), drawn: {},
   saved: store.get("saved", []),
-  data: {}, loading: {}, error: "", remaining: store.get("remaining", null),
+  data: {}, loading: {}, error: "",
   sheet: null, notice: "",
   logs: {}, logBusy: {}, logProg: null, grading: false, shared: null,
 };
@@ -218,18 +220,16 @@ for (const sp of SPORTS) { const d = store.get("data_" + sp.k, null); if (d) S.d
 
 /* ---------- API ---------- */
 async function api(path, params = {}) {
-  const base = (S.relay || DIRECT).replace(/\/+$/, "");
+  const base = S.relay.replace(/\/+$/, "");
   const u = new URL(base + "/v1" + path);
   for (const [k, v] of Object.entries(params)) if (v != null && v !== "") u.searchParams.set(k, v);
-  u.searchParams.set("apiKey", S.key);
   let r;
   try { r = await fetch(u.toString()); }
-  catch { throw new Error(S.relay ? "Couldn't reach your relay. Check the relay link in Settings, then tap Refresh now." : "PropLine blocks direct calls from web pages. Add your relay link in Settings, then tap Refresh now."); }
-  const rem = r.headers.get("X-Daily-Remaining") || r.headers.get("RateLimit-Remaining");
-  if (rem != null) { S.remaining = Number(rem); store.set("remaining", S.remaining); }
-  if (r.status === 401 || r.status === 403) throw new Error("PropLine didn't accept that API key. Open Settings and paste it again.");
-  if (r.status === 429) throw new Error("Daily request limit reached. Lines will load again after midnight UTC.");
-  if (!r.ok) throw new Error("PropLine returned an error (" + r.status + "). Try again in a minute.");
+  catch { throw new Error("Couldn't reach the odds service. Check your connection, then tap Refresh now."); }
+  if (r.status === 401 || r.status === 403) throw new Error("The odds service isn't set up yet. Try again later.");
+  if (r.status === 429) throw new Error("Lots of people are pulling right now. Try again in a minute.");
+  if (r.status === 503) throw new Error("Live lines are paused for now. Try again later.");
+  if (!r.ok) throw new Error("The odds service returned an error (" + r.status + "). Try again in a minute.");
   return r.json();
 }
 
@@ -242,7 +242,7 @@ async function pool(items, n, fn) {
 }
 
 async function loadSport(sk) {
-  if (!S.key || S.loading[sk]) return;
+  if (S.loading[sk]) return;
   S.loading[sk] = true; S.error = ""; render();
   try {
     const sp = SPORTS.find(s => s.k === sk);
@@ -449,7 +449,7 @@ function persistLogs(sk) {
 }
 async function ensureLogs() {
   const sk = S.sport, d = D();
-  if (!S.f.hit || !d || !S.key || S.logBusy[sk]) return;
+  if (!S.f.hit || !d || S.logBusy[sk]) return;
   const now = Date.now(), gm = gameMap(), seen = new Set(), need = [];
   for (const l of d.legs) {
     if (!(l.alt) || seen.has(l.pk) || !statFor(sk, l.m) || !gm[l.g] || Date.parse(gm[l.g].t) < now) continue;
@@ -491,6 +491,25 @@ function poolLegs() {
     return true;
   });
 }
+/* Rough real odds for a "pays at least" target before pulling: uses the pool's typical
+   leg price and how much of the fair value the book pays, at the chosen book. */
+function payoutStats(pool) {
+  const ds = [], rs = [];
+  for (let i = 0; i < pool.length; i += Math.max(1, Math.floor(pool.length / 600))) {
+    const l = pool[i], p = priceAt(l, S.book); if (!p) continue;
+    ds.push(dec(p.a)); rs.push(Math.min(1.1, l.f * dec(p.a)));
+  }
+  if (!ds.length) return null;
+  return { d: Math.max(1.15, median(ds)), r: median(rs) };
+}
+function payoutOdds(st, target) {
+  if (!st || !(target > S.stake)) return null;
+  const mult = target / S.stake;
+  const n = Math.min(S.maxLegs || 12, Math.max(2, Math.round(Math.log(mult) / Math.log(st.d))));
+  return mult / Math.pow(st.r, n);
+}
+const oddsLabel = x => x == null ? "" : x < 1.05 ? "likely" : "1 in " + (x < 10 ? x.toFixed(1) : Math.round(x).toLocaleString("en-US"));
+
 function weight(l) {
   const e = Math.max(-0.25, Math.min(0.3, edge(l, S.book)));
   return Math.max(0.15, 1 + 6 * e) / (1 + (S.drawn[l.id] || 0));
@@ -664,7 +683,7 @@ function settledReturn(t) {
   return t.stake * d;
 }
 async function gradeAll() {
-  if (S.grading || !S.key) return;
+  if (S.grading) return;
   const now = Date.now(), jobs = new Map();
   for (const t of S.saved) {
     migrate(t);
@@ -706,7 +725,7 @@ function toast(m) { const el = document.getElementById("toast"); el.textContent 
 
 /* ---------- auto refresh ---------- */
 function staleAge() { const d = D(); return d ? Date.now() - d.t : Infinity; }
-function maybeRefresh() { if (S.key && S.age && staleAge() > S.every * 36e5) loadSport(S.sport); }
+function maybeRefresh() { if (S.age && staleAge() > S.every * 36e5) loadSport(S.sport); }
 setInterval(maybeRefresh, 60e3);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) maybeRefresh(); });
 
@@ -743,14 +762,12 @@ function gateHTML() {
 function statusHTML() {
   const d = D(); const loading = S.loading[S.sport];
   let dot = "off", txt = "No lines loaded";
-  if (!S.key) txt = "Add your PropLine key in Settings";
-  else if (loading) { dot = "stale"; txt = "Loading lines…"; }
+  if (loading) { dot = "stale"; txt = "Loading lines…"; }
   else if (d) { dot = staleAge() > S.every * 36e5 ? "stale" : ""; txt = `Lines as of ${ago(staleAge())}`; }
   return `<div class="status"><span><i class="dot ${dot}"></i><b>${txt}</b></span>
     ${d ? `<span>${d.legs.length.toLocaleString()} props · ${d.games.length} game${d.games.length === 1 ? "" : "s"}</span>` : ""}
-    ${S.remaining != null ? `<span>${S.remaining.toLocaleString()} requests left today</span>` : ""}
     ${S.logProg ? `<span>Checking player history ${S.logProg.done}/${S.logProg.total}</span>` : ""}
-    ${S.key && !loading ? `<button class="link" data-act="refresh">Refresh now</button>` : ""}</div>
+    ${!loading ? `<button class="link" data-act="refresh">Refresh now</button>` : ""}</div>
     ${S.error ? `<p class="err">${esc(S.error)}</p>` : ""}`;
 }
 
@@ -769,14 +786,12 @@ function sharedHTML() {
 function machineHTML() {
   const d = D(); const gm = gameMap();
   const tabs = `<div class="tabs" role="group" aria-label="Sport">${SPORTS.map(s => `<button aria-pressed="${S.sport === s.k}" data-act="sport:${s.k}">${s.l}</button>`).join("")}</div>`;
-  if (!S.key) return sharedHTML() + tabs + statusHTML() + `<section class="step"><h2>Connect your odds feed</h2>
-    <p class="hint">Paste your PropLine API key to load live player props from DraftKings, FanDuel and other books. The key is saved only in this browser.</p>
-    <button class="btn" data-act="settings">Add API key</button></section>`;
   if (!d) return tabs + statusHTML() + `<div class="empty">${S.loading[S.sport] ? "Pulling today's lines…" : "Tap Refresh now to load lines."}</div>`;
   if (!d.games.length) return tabs + statusHTML() + `<div class="empty">No ${SPORTS.find(s => s.k === S.sport).l} games in the next few days.</div>`;
   if (!d.legs.length) return tabs + statusHTML() + `<div class="empty">Games are listed, but the books haven't posted player props yet. Check back closer to game day.</div>`;
 
   const pool = poolLegs();
+  const pst = payoutStats(pool);
   const days = [...new Set(d.games.map(g => dayOf(g.t)))];
   const markets = [...new Set(d.legs.map(l => l.m))].sort();
   const f = S.f;
@@ -800,10 +815,13 @@ function machineHTML() {
     <div class="seg"><button aria-pressed="${S.byLegs}" data-act="mode:legs">Pick legs</button><button aria-pressed="${!S.byLegs}" data-act="mode:pay">Pick payout</button></div>
     ${S.byLegs ? `<div class="label">Legs</div><div class="chips">${[2, 3, 4, 5, 6, 8, 10].map(n => chip(String(n), S.legN === n, "legn:" + n)).join("")}</div>`
     : `<div class="label">Pays at least</div>
-       <div class="chips">${[[100, "$100"], [250, "$250"], [500, "$500"], [1000, "$1K"], [2500, "$2.5K"], [10000, "$10K"], [100000, "$100K"]].map(([v, t]) => chip(t, S.target === v, "target:" + v)).join("")}</div>
+       <div class="chips">${[[100, "$100"], [250, "$250"], [500, "$500"], [1000, "$1K"], [2500, "$2.5K"], [10000, "$10K"], [100000, "$100K"]].map(([v, t]) => {
+         const o = payoutOdds(pst, v);
+         return `<button class="chip pay" aria-pressed="${S.target === v}" data-act="target:${v}">${t}<small>${o == null ? "—" : oddsLabel(o)}</small></button>`; }).join("")}</div>
        <input id="custom-target" class="text" inputmode="numeric" placeholder="Custom payout, e.g. 750" data-input="target">
+       <p class="hint" id="custom-odds">${[100, 250, 500, 1000, 2500, 10000, 100000].includes(S.target) ? "" : `Custom ${money(S.target)}: about ${oddsLabel(payoutOdds(pst, S.target))} to hit`}</p>
        <div class="label">Max legs</div><div class="chips">${chip("Any", S.maxLegs == null, "maxl:any")}${[3, 4, 5, 6].map(n => chip(String(n), S.maxLegs === n, "maxl:" + n)).join("")}</div>
-       <p class="hint">Finds the likeliest ticket that returns at least this on your stake.</p>`}
+       <p class="hint">Under each amount: rough odds of hitting a ticket that pays it on your ${money(S.stake)} stake at ${S.book ? esc(bookName(S.book)) : "best prices"}. Pull to see the exact odds.</p>`}
     <div class="label">Stake</div>
     <div class="chips">${[5, 10, 25, 50, 100].map(v => chip("$" + v, S.stake === v, "stake:" + v)).join("")}</div>
     <input id="custom-stake" class="text" inputmode="decimal" placeholder="Custom stake" data-input="stake">
@@ -865,7 +883,7 @@ function savedHTML() {
     <div class="card"><div class="kv">
       <span>Record</span><b class="num">${w}–${lo}${op ? ` · ${op} open` : ""}</b>
       <span>Net if played</span><b class="num" style="color:${net >= 0 ? "var(--win)" : "var(--risk)"}">${net >= 0 ? "+" : "−"}${money(Math.abs(net))}</b></div>
-      <div class="row"><span class="hint grow">${S.grading ? "Checking results…" : "Legs are graded against the box score after each game."}</span>${S.key && !S.grading ? `<button class="link" data-act="grade">Check results</button>` : ""}</div></div>` +
+      <div class="row"><span class="hint grow">${S.grading ? "Checking results…" : "Legs are graded against the box score after each game."}</span>${!S.grading ? `<button class="link" data-act="grade">Check results</button>` : ""}</div></div>` +
     S.saved.map((t, i) => {
       const pr = snapPrice(t), st = ticketState(t);
       const badge = st === "won" ? `<span class="tag" style="color:var(--win);border-color:var(--win)">Won</span>` : st === "lost" ? `<span class="tag" style="color:var(--risk);border-color:var(--risk)">Lost</span>` : `<span class="tag">Open</span>`;
@@ -946,17 +964,14 @@ function sheetHTML() {
     body = `<h3>Copy this ticket</h3><p class="hint">Long-press the text and choose Copy.</p><textarea id="copy-area" class="text" rows="9" readonly>${esc(sh.text)}</textarea>`;
   } else if (sh.type === "settings") {
     body = `<h3>Settings</h3>
-      <label class="label" for="key-input">PropLine API key</label>
-      <input id="key-input" class="text" type="password" autocomplete="off" placeholder="Paste your key" value="${esc(S.key)}">
-      <p class="hint">Saved only in this browser on this phone. Never shared.</p>
-      <label class="label" for="relay-input">Relay link</label>
-      <input id="relay-input" class="text" type="url" autocomplete="off" placeholder="https://longshot-relay.yourname.workers.dev" value="${esc(S.relay)}">
-      <p class="hint">Your Cloudflare Worker link. It passes requests to PropLine so your browser can read them.</p>
       <div class="label">Refresh lines every</div>
       <div class="chips">${[1, 3, 6].map(h => chip(h + " hr", S.every === h, "every:" + h)).join("")}</div>
-      <p class="hint">A refresh of one sport uses about 5 to 35 requests. Checking player history uses one request per player, about once a day. Your remaining requests show at the top of the Machine tab.</p>
-      <button class="btn gold" data-act="savekey">Save & load lines</button>
-      ${S.key ? `<button class="btn" data-act="clearkey">Remove key</button>` : ""}`;
+      <p class="hint">Lines also refresh whenever you tap Refresh now.</p>
+      <details><summary class="hint">Advanced</summary>
+        <label class="label" for="relay-input" style="display:block;margin-top:10px">Odds service link</label>
+        <input id="relay-input" class="text" type="url" autocomplete="off" value="${esc(S.relay)}" style="margin-top:6px">
+        <button class="btn" data-act="saverelay" style="margin-top:8px">Save link</button>
+      </details>`;
   }
   return `<div class="scrim" data-act="close"><div class="sheet" data-stop>${body}<button class="btn" data-act="close">Close</button></div></div>`;
 }
@@ -998,7 +1013,7 @@ document.addEventListener("click", e => {
     case "card": {
       S.sheet = { type: "card", i: +arg }; const l = S.ticket[+arg], sk = S.sport;
       const lg = S.logs[sk][l.pk];
-      if (statFor(sk, l.m) && (!lg || Date.now() - lg.at > LOG_TTL) && S.key) {
+      if (statFor(sk, l.m) && (!lg || Date.now() - lg.at > LOG_TTL)) {
         S.cardLoading = true;
         fetchLog(sk, l).catch(() => {}).finally(() => { S.cardLoading = false; persistLogs(sk); if (S.sheet && S.sheet.type === "card") render(); });
       }
@@ -1027,15 +1042,12 @@ document.addEventListener("click", e => {
     case "sshare": S.sheet = { type: "share", src: migrate(S.saved[+arg]) }; break;
     case "sdel": S.saved.splice(+arg, 1); store.set("saved", S.saved); break;
     case "every": S.every = +arg; store.set("every", S.every); break;
-    case "savekey": {
-      const v = document.getElementById("key-input").value.trim();
-      if (!v) { toast("Paste your key first"); return; }
-      S.key = v; store.set("key", v);
+    case "saverelay": {
       let rl = document.getElementById("relay-input").value.trim();
       if (rl && !/^https?:\/\//i.test(rl)) rl = "https://" + rl;
-      S.relay = rl; store.set("relay", S.relay); S.sheet = null; S.error = ""; render(); loadSport(S.sport); return;
+      S.relay = rl || PUBLIC_RELAY; store.set("relay", rl ? S.relay : ""); S.sheet = null; S.error = ""; render(); loadSport(S.sport); return;
     }
-    case "clearkey": S.key = ""; store.set("key", ""); S.sheet = null; break;
+
   }
   render();
 });
@@ -1046,11 +1058,12 @@ document.addEventListener("change", e => {
   if (a === "yes") { S.f.yes = e.target.checked; render(); }
   if (a === "hit") { S.f.hit = e.target.checked; store.set("hit", S.f.hit); render(); ensureLogs(); }
 });
+document.addEventListener("change", e => { if (e.target.dataset && e.target.dataset.input === "stake" && !S.byLegs) render(); });
 document.addEventListener("input", e => {
   const k = e.target.dataset.input; if (!k) return;
   const v = parseFloat(e.target.value.replace(/[^0-9.]/g, ""));
   if (!(v > 0)) return;
-  if (k === "target") S.target = v; else S.stake = v;
+  if (k === "target") { S.target = v; const el = document.getElementById("custom-odds"); if (el) el.textContent = `Custom ${money(v)}: about ${oddsLabel(payoutOdds(payoutStats(poolLegs()), v))} to hit`; } else S.stake = v;
   document.querySelectorAll(`[data-act^="${k}:"]`).forEach(c => c.setAttribute("aria-pressed", "false"));
 });
 
