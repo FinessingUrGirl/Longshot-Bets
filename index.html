@@ -1,0 +1,709 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0f1630">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Longshot Lab</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=IBM+Plex+Mono:wght@500;600&display=swap">
+<style>
+/* Layout: single column, thumb-first; machine on top, receipt prints below like a ticket */
+:root{
+  --bg:#0f1630; --panel:#18213f; --panel-hi:#222d52; --line:#2c3964;
+  --fg:#eef1fb; --muted:#9aa5c8; --accent:#ffb347; --accent-ink:#2a1700;
+  --mint:#5fe3b5; --rose:#ff7a8a; --paper:#f4f1e8; --paper-ink:#1b2033;
+  --display:"Bricolage Grotesque",ui-sans-serif,system-ui,sans-serif;
+  --body:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--fg);font:15px/1.45 var(--body);padding:env(safe-area-inset-top,0px) 16px calc(96px + env(safe-area-inset-bottom,0px));max-width:640px;margin:0 auto;-webkit-tap-highlight-color:transparent}
+[hidden]{display:none!important}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+h1,h2,h3{font-family:var(--display);margin:0;text-wrap:balance}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+header.top{display:flex;align-items:center;gap:12px;padding-block:16px 8px}
+.brand{font-family:var(--display);font-weight:800;font-size:22px;letter-spacing:-.01em;flex:1}
+.brand span{color:var(--accent)}
+.iconbtn{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:8px 12px;font-size:13px}
+.status{font-size:12px;color:var(--muted);display:flex;flex-wrap:wrap;gap:4px 12px;padding-bottom:12px}
+.status b{color:var(--fg);font-weight:600}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--mint);margin-right:5px;vertical-align:1px}
+.dot.stale{background:var(--accent)} .dot.off{background:var(--rose)}
+
+.tabs{display:flex;gap:6px;margin-bottom:12px}
+.tabs button{flex:1;background:transparent;border:1px solid var(--line);border-radius:999px;padding:8px 0;font-weight:600;color:var(--muted)}
+.tabs button[aria-pressed=true]{background:var(--fg);color:var(--bg);border-color:var(--fg)}
+
+section.step{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:16px;margin-bottom:12px;display:grid;gap:12px}
+.stephead{display:flex;align-items:baseline;gap:10px}
+.stephead .n{font-family:var(--mono);color:var(--accent);font-size:13px}
+.stephead h2{font-size:17px;flex:1}
+.link{background:none;border:0;color:var(--accent);font-weight:600;padding:0}
+.label{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{background:var(--panel-hi);border:1px solid transparent;border-radius:999px;padding:6px 12px;font-size:13px;color:var(--fg)}
+.chip[aria-pressed=true]{background:color-mix(in srgb,var(--accent) 18%,var(--panel));border-color:var(--accent);color:var(--fg)}
+.chip.off{opacity:.45;text-decoration:line-through}
+.row{display:flex;align-items:center;gap:10px}
+.row .grow{flex:1;min-width:0}
+.switch{appearance:none;width:42px;height:24px;border-radius:999px;background:var(--line);position:relative;flex:none;transition:background .15s}
+.switch::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:var(--fg);transition:transform .15s}
+.switch:checked{background:var(--mint)} .switch:checked::after{transform:translateX(18px)}
+.seg{display:grid;grid-template-columns:1fr 1fr;background:var(--bg);border-radius:12px;padding:3px}
+.seg button{background:transparent;border:0;border-radius:9px;padding:9px;font-weight:600;color:var(--muted)}
+.seg button[aria-pressed=true]{background:var(--panel-hi);color:var(--fg)}
+input.text{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.hint{font-size:12px;color:var(--muted)}
+.warn{font-size:13px;color:var(--accent)}
+.err{font-size:13px;color:var(--rose)}
+
+.lever{width:100%;border:0;border-radius:18px;padding:18px;background:var(--accent);color:var(--accent-ink);font-family:var(--display);font-weight:800;font-size:20px;letter-spacing:.02em;box-shadow:0 6px 0 #b9741c;transition:transform .08s,box-shadow .08s;margin-bottom:12px}
+.lever:active{transform:translateY(4px);box-shadow:0 2px 0 #b9741c}
+.lever:disabled{opacity:.4;box-shadow:none}
+
+/* receipt */
+.receipt{background:var(--paper);color:var(--paper-ink);border-radius:6px;padding:18px 16px 20px;margin-bottom:12px;position:relative;
+  -webkit-mask:radial-gradient(circle 7px at 50% 0,#0000 98%,#000) 0 0/18px 51% repeat-x,radial-gradient(circle 7px at 50% 100%,#0000 98%,#000) 0 100%/18px 51% repeat-x;
+          mask:radial-gradient(circle 7px at 50% 0,#0000 98%,#000) 0 0/18px 51% repeat-x,radial-gradient(circle 7px at 50% 100%,#0000 98%,#000) 0 100%/18px 51% repeat-x}
+.receipt .rh{font-family:var(--mono);font-size:12px;display:flex;justify-content:space-between;border-bottom:1px dashed #0004;padding-bottom:8px;margin-bottom:8px}
+.leg{display:flex;gap:10px;align-items:flex-start;width:100%;background:none;border:0;text-align:left;padding:9px 0;border-bottom:1px dashed #0003;color:inherit}
+.leg .who{flex:1;min-width:0}
+.leg .who b{display:block;font-weight:700}
+.leg .who small{display:block;color:#5a6075;font-size:12px}
+.leg .px{font-family:var(--mono);font-weight:600;text-align:right}
+.tag{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;border-radius:4px;padding:1px 5px;margin-left:4px;vertical-align:1px}
+.tag.keep{background:#1b2033;color:var(--paper)} .tag.alt{border:1px solid #0005} .tag.thin{background:#ffd9a0}
+.tot{display:grid;grid-template-columns:1fr auto;gap:4px 12px;font-family:var(--mono);font-size:14px;padding-top:10px}
+.tot .big{font-size:22px;font-weight:600}
+.tot .lbl{font-family:var(--body);color:#5a6075}
+.fine{font-size:11px;color:#5a6075;margin-top:10px}
+.actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.btn{background:var(--panel-hi);border:1px solid var(--line);border-radius:12px;padding:9px 14px;font-weight:600;font-size:14px}
+.receipt .btn{background:#fff;border-color:#0002;color:var(--paper-ink)}
+.btn.primary{background:var(--paper-ink);color:var(--paper);border-color:var(--paper-ink)}
+.removed{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+
+/* sheets */
+.scrim{position:fixed;inset:0;background:#0009;display:flex;align-items:flex-end;justify-content:center;z-index:20}
+.sheet{background:var(--panel);width:100%;max-width:640px;max-height:85vh;overflow:auto;border-radius:20px 20px 0 0;padding:18px 16px calc(20px + env(safe-area-inset-bottom,0px));display:grid;gap:12px}
+.sheet h3{font-size:18px}
+.sheet .opt{display:flex;justify-content:space-between;gap:10px;width:100%;background:var(--panel-hi);border:0;border-radius:12px;padding:12px 14px;text-align:left}
+.sheet .opt.cur{outline:1px solid var(--accent)}
+.kv{display:grid;grid-template-columns:1fr auto;gap:6px 12px}
+
+nav.bottom{position:fixed;left:0;right:0;bottom:0;background:color-mix(in srgb,var(--bg) 92%,transparent);backdrop-filter:blur(10px);border-top:1px solid var(--line);display:flex;justify-content:center;padding:8px 16px calc(8px + env(safe-area-inset-bottom,0px));z-index:10}
+nav.bottom div{display:flex;gap:6px;width:100%;max-width:608px}
+nav.bottom button{flex:1;background:none;border:0;border-radius:12px;padding:10px 0;color:var(--muted);font-weight:600}
+nav.bottom button[aria-current=page]{background:var(--panel);color:var(--fg)}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px;display:grid;gap:6px;margin-bottom:10px}
+.empty{color:var(--muted);text-align:center;padding:28px 8px}
+.gate{min-height:80vh;display:grid;place-content:center;gap:16px;text-align:center}
+.gate h1{font-size:44px;line-height:1;font-weight:800}
+.gate h1 span{color:var(--accent)}
+.foot{font-size:11px;color:var(--muted);margin-top:16px}
+.toast{position:fixed;left:50%;bottom:calc(84px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--fg);color:var(--bg);border-radius:999px;padding:9px 16px;font-size:13px;font-weight:600;z-index:30}
+details summary{cursor:pointer;font-weight:600;padding:4px 0}
+details p{color:var(--muted);margin:6px 0 4px}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="toast" class="toast" hidden></div>
+
+<script>
+"use strict";
+/* ---------- config ---------- */
+const API = "https://api.prop-line.com/v1";
+const SPORTS = [
+  { k: "football_nfl", l: "NFL", days: 8 },
+  { k: "basketball_nba", l: "NBA", days: 3 },
+  { k: "hockey_nhl", l: "NHL", days: 3 },
+  { k: "baseball_mlb", l: "MLB", days: 3 },
+];
+const BOOKS = [
+  { k: "draftkings", l: "DraftKings", u: "https://sportsbook.draftkings.com" },
+  { k: "fanduel", l: "FanDuel", u: "https://sportsbook.fanduel.com" },
+  { k: "betmgm", l: "BetMGM", u: "https://sports.betmgm.com" },
+  { k: "fanatics", l: "Fanatics", u: "https://sportsbook.fanatics.com" },
+  { k: "hardrock", l: "Hard Rock", u: "https://www.hardrock.bet" },
+  { k: "betrivers", l: "BetRivers", u: "https://www.betrivers.com" },
+];
+const FAIR_ONLY = ["pinnacle", "bovada"];
+const BOOK_KEYS = BOOKS.map(b => b.k);
+const GAME_LINE_KEYS = /^(h2h|spreads|totals|alternate_|team_|.*_winner$|btts|double_chance|draw_no_bet|correct_score)/;
+const MAX_PER_GAME = 10;
+const MAX_EVENTS = 16;
+
+/* ---------- storage ---------- */
+const store = {
+  get(k, d) { try { const v = localStorage.getItem("ll_" + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("ll_" + k, JSON.stringify(v)); return true; } catch { return false; } },
+};
+
+/* ---------- odds math ---------- */
+const dec = a => a > 0 ? 1 + a / 100 : 1 + 100 / -a;
+const imp = a => 1 / dec(a);
+const fmtA = a => a == null ? "—" : (a > 0 ? "+" + a : String(a));
+const money = v => v >= 1000 ? "$" + Math.round(v).toLocaleString("en-US") : "$" + v.toFixed(2);
+const pct = p => (p * 100).toFixed(1) + "%";
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const median = xs => { const s = [...xs].sort((a, b) => a - b); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+const prettyMarket = k => {
+  const map = { pass_yds: "Pass Yds", rush_yds: "Rush Yds", reception_yds: "Rec Yds", rec_yds: "Rec Yds", pass_tds: "Pass TDs", pass_attempts: "Pass Att", pass_completions: "Completions", hits_runs_rbis: "H+R+RBI", points_rebounds_assists: "Pts+Reb+Ast", shots_on_goal: "Shots on Goal" };
+  let s = k.replace(/^(player|batter|pitcher|goalie)_/, "");
+  if (map[s]) return map[s];
+  return s.split("_").map(w => w.length <= 3 && /^(yds|tds|rbi|sog)$/.test(w) ? w.toUpperCase() : w[0].toUpperCase() + w.slice(1)).join(" ");
+};
+const bookName = k => (BOOKS.find(b => b.k === k) || { l: k }).l;
+
+/* ---------- state ---------- */
+const S = {
+  age: store.get("age", false),
+  key: store.get("key", ""),
+  every: store.get("every", 3),
+  tab: "machine",
+  sport: store.get("sport", "football_nfl"),
+  book: store.get("book", "draftkings"),
+  f: { days: new Set(), games: new Set(), off: new Set(), alt: true, overs: false, odds: "any", open: false },
+  byLegs: true, legN: 4, target: 1000, maxLegs: null, stake: 10,
+  ticket: [], kept: new Set(), removed: new Set(), drawn: {},
+  saved: store.get("saved", []),
+  data: {}, loading: {}, error: "", remaining: store.get("remaining", null),
+  sheet: null, notice: "",
+};
+for (const sp of SPORTS) { const d = store.get("data_" + sp.k, null); if (d) S.data[sp.k] = d; }
+
+/* ---------- API ---------- */
+async function api(path, params = {}) {
+  const u = new URL(API + path);
+  for (const [k, v] of Object.entries(params)) if (v != null && v !== "") u.searchParams.set(k, v);
+  u.searchParams.set("apiKey", S.key);
+  let r;
+  try { r = await fetch(u.toString()); }
+  catch { throw new Error("Couldn't reach PropLine from this browser. Check your connection, then try Refresh."); }
+  const rem = r.headers.get("X-Daily-Remaining") || r.headers.get("RateLimit-Remaining");
+  if (rem != null) { S.remaining = Number(rem); store.set("remaining", S.remaining); }
+  if (r.status === 401 || r.status === 403) throw new Error("PropLine didn't accept that API key. Open Settings and paste it again.");
+  if (r.status === 429) throw new Error("Daily request limit reached. Lines will load again after midnight UTC.");
+  if (!r.ok) throw new Error("PropLine returned an error (" + r.status + "). Try again in a minute.");
+  return r.json();
+}
+
+async function pool(items, n, fn) {
+  const out = []; let i = 0;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => {
+    while (i < items.length) { const idx = i++; try { out[idx] = await fn(items[idx]); } catch (e) { out[idx] = { error: e }; } }
+  }));
+  return out;
+}
+
+async function loadSport(sk) {
+  if (!S.key || S.loading[sk]) return;
+  S.loading[sk] = true; S.error = ""; render();
+  try {
+    const sp = SPORTS.find(s => s.k === sk);
+    const now = Date.now();
+    const evs = (await api(`/sports/${sk}/events`))
+      .filter(e => e.away_team && !e.is_outright)
+      .filter(e => { const t = Date.parse(e.commence_time); return t > now && t < now + sp.days * 864e5; })
+      .sort((a, b) => Date.parse(a.commence_time) - Date.parse(b.commence_time))
+      .slice(0, MAX_EVENTS);
+    if (!evs.length) { saveData(sk, { t: now, games: [], legs: [], links: {} }); return; }
+
+    // discover which prop markets exist (one cheap call; retry on up to 3 games)
+    let keys = [];
+    for (const e of evs.slice(0, 3)) {
+      const mk = await api(`/sports/${sk}/events/${e.id}/markets`);
+      keys = (mk || []).map(m => m.key).filter(k => !GAME_LINE_KEYS.test(k));
+      if (keys.length) break;
+    }
+    if (!keys.length) { saveData(sk, { t: now, games: evs.map(gameOf), legs: [], links: {} }); return; }
+
+    const params = { markets: keys.join(","), bookmakers: [...BOOK_KEYS, ...FAIR_ONLY].join(","), includeLinks: "true" };
+    const want = new Set(evs.map(e => String(e.id)));
+    let events = [];
+    try {
+      const bulk = await api(`/sports/${sk}/odds`, params);
+      events = (bulk || []).filter(e => want.has(String(e.id)));
+    } catch (e) { if (/key|limit/.test(e.message)) throw e; }
+    let built = build(events);
+    if (!built.legs.length) {
+      const res = await pool(evs, 4, e => api(`/sports/${sk}/events/${e.id}/odds`, params));
+      const firstErr = res.find(r => r && r.error);
+      events = res.filter(r => r && !r.error);
+      if (!events.length && firstErr) throw firstErr.error;
+      built = build(events);
+    }
+    saveData(sk, { t: now, games: evs.map(gameOf), legs: built.legs, links: built.links });
+  } catch (e) {
+    S.error = e.message;
+  } finally {
+    S.loading[sk] = false; render();
+  }
+}
+const gameOf = e => ({ id: String(e.id), label: `${e.away_team} @ ${e.home_team}`, t: e.commence_time });
+function saveData(sk, d) {
+  S.data[sk] = d;
+  if (!store.set("data_" + sk, d)) { /* storage full: keep in memory only */ }
+  if (sk === S.sport) { S.ticket = []; S.kept.clear(); }
+}
+
+/* Turn raw odds into priced legs: group each player/market/line across books,
+   remove each book's cut from its over/under pair, and use Pinnacle's fair price
+   (or the median across books) as the fair chance. */
+function build(events) {
+  const groups = new Map(), links = {};
+  const norm = s => s.toLowerCase().replace(/\s*\([^)]*\)\s*$/, "").replace(/[^a-z0-9 ]/g, "").replace(/\s+(jr|sr|ii|iii)$/, "").trim();
+  for (const ev of events) {
+    if (!ev || !ev.bookmakers) continue;
+    const gid = String(ev.id);
+    for (const b of ev.bookmakers) {
+      if (b.link) (links[gid] ||= {})[b.key] = b.link;
+      for (const m of b.markets || []) {
+        if (m.period) continue;
+        for (const o of m.outcomes || []) {
+          if ((o.name !== "Over" && o.name !== "Under") || o.point == null || !o.description || o.price == null) continue;
+          const pkey = o.player_id || norm(o.description);
+          const key = `${gid}|${m.key}|${pkey}|${o.point}`;
+          let g = groups.get(key);
+          if (!g) { g = { gid, m: m.key, p: o.description.replace(/\s*\([^)]*\)\s*$/, ""), pk: pkey, pt: o.point, alt: true, books: {} }; groups.set(key, g); }
+          if ((o.line_type || m.line_type) === "main") g.alt = false;
+          (g.books[b.key] ||= {})[o.name[0]] = o.price;
+        }
+      }
+    }
+  }
+  const legs = [];
+  for (const [key, g] of groups) {
+    const fairs = {};
+    for (const [bk, pr] of Object.entries(g.books)) {
+      if (pr.O != null && pr.U != null) { const a = imp(pr.O), c = imp(pr.U); fairs[bk] = a / (a + c); }
+    }
+    const fk = Object.keys(fairs);
+    if (!fk.length) continue;
+    const pOver = fairs.pinnacle != null ? fairs.pinnacle : median(fk.map(k => fairs[k]));
+    const thin = fk.length < 2 && fairs.pinnacle == null;
+    for (const side of ["O", "U"]) {
+      const pr = {};
+      for (const bk of BOOK_KEYS) { const v = g.books[bk] && g.books[bk][side]; if (v != null && v > -2000 && v < 5000) pr[bk] = v; }
+      if (!Object.keys(pr).length) continue;
+      legs.push({ id: key + "|" + side, g: g.gid, m: g.m, p: g.p, pk: g.pk, pt: g.pt, s: side, alt: g.alt,
+        f: side === "O" ? pOver : 1 - pOver, thin, n: fk.length, pr });
+    }
+  }
+  return { legs, links };
+}
+
+/* ---------- pricing ---------- */
+const priceAt = (l, book) => {
+  if (book) return l.pr[book] != null ? { b: book, a: l.pr[book] } : null;
+  let best = null; for (const [b, a] of Object.entries(l.pr)) if (!best || dec(a) > dec(best.a)) best = { b, a };
+  return best;
+};
+const edge = (l, book) => { const p = priceAt(l, book); return p ? l.f * dec(p.a) - 1 : -1; };
+function priceTicket(legs, stake, book) {
+  let d = 1, f = 1;
+  for (const l of legs) { const p = priceAt(l, book); if (!p) continue; d *= dec(p.a); f *= l.f; }
+  const ret = stake * d, fairRet = f > 0 ? stake / f : 0;
+  return { ret, fairRet, f, cut: fairRet ? 1 - ret / fairRet : 0, oneIn: f ? 1 / f : 0 };
+}
+const legTitle = l => `${l.p} ${l.s === "O" ? "Over" : "Under"} ${l.pt} ${prettyMarket(l.m)}`;
+
+/* ---------- pool + engine ---------- */
+function D() { return S.data[S.sport] || null; }
+function gameMap() { const m = {}; for (const g of (D() || {}).games || []) m[g.id] = g; return m; }
+const dayOf = t => new Date(t).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+
+function poolLegs() {
+  const d = D(); if (!d) return [];
+  const gm = gameMap(); const f = S.f;
+  return d.legs.filter(l => {
+    const g = gm[l.g]; if (!g) return false;
+    if (f.days.size && !f.days.has(dayOf(g.t))) return false;
+    if (f.games.size && !f.games.has(l.g)) return false;
+    if (f.off.has(l.m)) return false;
+    if (!f.alt && l.alt) return false;
+    if (f.overs && l.s !== "O") return false;
+    const p = priceAt(l, S.book); if (!p) return false;
+    if (Date.parse(g.t) < Date.now()) return false;
+    if (f.odds === "safer" && l.f < 0.55) return false;
+    if (f.odds === "long" && p.a < 150) return false;
+    return true;
+  });
+}
+function weight(l) {
+  const e = Math.max(-0.25, Math.min(0.3, edge(l, S.book)));
+  return Math.max(0.15, 1 + 6 * e) / (1 + (S.drawn[l.id] || 0));
+}
+function eligible(pool, cur) {
+  const players = new Set(cur.map(l => l.pk)); const per = {};
+  for (const l of cur) per[l.g] = (per[l.g] || 0) + 1;
+  return pool.filter(l => !players.has(l.pk) && !S.removed.has(l.pk) && (per[l.g] || 0) < MAX_PER_GAME);
+}
+function pick(pool, cur) {
+  const c = eligible(pool, cur); if (!c.length) return null;
+  const w = c.map(weight); let r = Math.random() * w.reduce((a, b) => a + b, 0);
+  for (let i = 0; i < c.length; i++) { r -= w[i]; if (r <= 0) return c[i]; }
+  return c[c.length - 1];
+}
+function fill(pool, start, n) { const out = [...start]; while (out.length < n) { const l = pick(pool, out); if (!l) break; out.push(l); } return out; }
+function commit(ls) { for (const l of ls) S.drawn[l.id] = (S.drawn[l.id] || 0) + 1; }
+
+function pull() {
+  const pool = poolLegs();
+  if (!pool.length) { S.notice = "No legs match these filters."; return render(); }
+  const kept = S.ticket.filter(l => S.kept.has(l.id));
+  let res;
+  if (S.byLegs) res = fill(pool, kept, Math.max(S.legN, kept.length));
+  else {
+    const maxN = Math.max(S.maxLegs || 6, 2, kept.length), minN = Math.max(2, kept.length);
+    let best = null, bestP = -1, close = null, closeR = -1;
+    for (let i = 0; i < 400; i++) {
+      const n = minN + Math.floor(Math.random() * (maxN - minN + 1));
+      const t = fill(pool, kept, n); if (t.length < 2) continue;
+      const pr = priceTicket(t, S.stake, S.book);
+      if (pr.ret >= S.target) { if (pr.f > bestP) { best = t; bestP = pr.f; } }
+      else if (pr.ret > closeR) { close = t; closeR = pr.ret; }
+    }
+    res = best || close || kept;
+  }
+  commit(res.filter(l => !kept.includes(l)));
+  S.ticket = res;
+  const pr = priceTicket(res, S.stake, S.book);
+  S.notice = res.length < 2 ? "Not enough legs in the pool for a full ticket."
+    : (!S.byLegs && pr.ret < S.target) ? "Couldn't reach that payout with these filters. Closest ticket shown."
+    : (S.byLegs && res.length < S.legN) ? `Only ${res.length} legs available with these filters.` : "";
+  render();
+  requestAnimationFrame(() => document.getElementById("receipt")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+}
+function swap(i) {
+  const others = S.ticket.filter((_, j) => j !== i);
+  const l = pick(poolLegs().filter(x => x.id !== S.ticket[i].id), others);
+  if (!l) { toast("Nothing else fits that spot."); return; }
+  commit([l]); S.ticket = S.ticket.map((x, j) => j === i ? l : x); S.sheet = null; render();
+}
+function removeLeg(i) { const l = S.ticket[i]; S.removed.add(l.pk); S.kept.delete(l.id); S.ticket = S.ticket.filter((_, j) => j !== i); S.sheet = null; render(); }
+function addTop() {
+  const d = D(); if (!d) return;
+  const gm = gameMap();
+  const c = eligible(d.legs.filter(l => priceAt(l, S.book) && gm[l.g] && Date.parse(gm[l.g].t) > Date.now()), S.ticket);
+  if (!c.length) return toast("Nothing left to add.");
+  let best = c[0]; for (const l of c) if (edge(l, S.book) > edge(best, S.book)) best = l;
+  S.ticket = [...S.ticket, best]; render();
+}
+function alternatives(l) {
+  return (D()?.legs || []).filter(x => x.pk === l.pk && x.g === l.g && x.id !== l.id && priceAt(x, S.book))
+    .sort((a, b) => a.m.localeCompare(b.m) || a.pt - b.pt || a.s.localeCompare(b.s));
+}
+
+/* ---------- ticket text / share ---------- */
+function ticketText(legs, stake, book) {
+  const pr = priceTicket(legs, stake, book), gm = gameMap();
+  const lines = legs.map((l, i) => { const p = priceAt(l, book); return `${i + 1}) ${legTitle(l)} ${fmtA(p && p.a)}${gm[l.g] ? "  [" + gm[l.g].label + "]" : ""}`; });
+  return `Longshot Lab ticket (${book ? bookName(book) : "best prices"})\n${lines.join("\n")}\nStake ${money(stake)} returns ${money(pr.ret)}\nReal odds: 1 in ${Math.round(pr.oneIn).toLocaleString("en-US")}\n21+. Entertainment only. 1-800-GAMBLER`;
+}
+async function copyText(t) {
+  try { await navigator.clipboard.writeText(t); toast("Copied"); return true; }
+  catch { S.sheet = { type: "text", text: t }; render(); return false; }
+}
+async function shareText(t) {
+  if (navigator.share) { try { await navigator.share({ text: t }); return; } catch (e) { if (e && e.name === "AbortError") return; } }
+  copyText(t);
+}
+let toastT;
+function toast(m) { const el = document.getElementById("toast"); el.textContent = m; el.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => el.hidden = true, 2200); }
+
+/* ---------- auto refresh ---------- */
+function staleAge() { const d = D(); return d ? Date.now() - d.t : Infinity; }
+function maybeRefresh() { if (S.key && S.age && staleAge() > S.every * 36e5) loadSport(S.sport); }
+setInterval(maybeRefresh, 60e3);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) maybeRefresh(); });
+
+/* ---------- render ---------- */
+const ago = ms => { const m = Math.round(ms / 6e4); return m < 1 ? "just now" : m < 60 ? m + " min ago" : Math.round(m / 60) + " hr ago"; };
+const chip = (label, on, act, extra = "") => `<button class="chip ${extra}" aria-pressed="${on}" data-act="${act}">${esc(label)}</button>`;
+
+function render() {
+  const app = document.getElementById("app");
+  if (!S.age) { app.innerHTML = gateHTML(); return; }
+  let main = S.tab === "machine" ? machineHTML() : S.tab === "saved" ? savedHTML() : learnHTML();
+  app.innerHTML = `
+  <header class="top"><div class="brand">Longshot <span>Lab</span></div>
+    <button class="iconbtn" data-act="settings">Settings</button></header>
+  ${main}
+  <p class="foot">21+ only. Entertainment only; no bets are placed here. Lines move, so verify every leg at your book. Not affiliated with any sportsbook. Help: 1-800-GAMBLER.</p>
+  <nav class="bottom"><div>
+    <button data-act="tab:machine" ${S.tab === "machine" ? 'aria-current="page"' : ""}>Machine</button>
+    <button data-act="tab:saved" ${S.tab === "saved" ? 'aria-current="page"' : ""}>Tickets (${S.saved.length})</button>
+    <button data-act="tab:learn" ${S.tab === "learn" ? 'aria-current="page"' : ""}>How it works</button>
+  </div></nav>
+  ${S.sheet ? sheetHTML() : ""}`;
+}
+
+function gateHTML() {
+  return `<div class="gate">
+    <h1>Longshot<br><span>Lab</span></h1>
+    <p style="color:var(--muted);max-width:32ch;margin:0 auto">A parlay machine that shows the real odds next to what the book pays. Entertainment only. No bets are placed in this app.</p>
+    <button class="lever" data-act="age">I am 21+ · Enter</button>
+    <p class="hint">Know the number: 1-800-GAMBLER</p></div>`;
+}
+
+function statusHTML() {
+  const d = D(); const loading = S.loading[S.sport];
+  let dot = "off", txt = "No lines loaded";
+  if (!S.key) txt = "Add your PropLine key in Settings";
+  else if (loading) { dot = "stale"; txt = "Loading lines…"; }
+  else if (d) { dot = staleAge() > S.every * 36e5 ? "stale" : ""; txt = `Lines as of ${ago(staleAge())}`; }
+  return `<div class="status"><span><i class="dot ${dot}"></i><b>${txt}</b></span>
+    ${d ? `<span>${d.legs.length.toLocaleString()} props · ${d.games.length} games</span>` : ""}
+    ${S.remaining != null ? `<span>${S.remaining} requests left today</span>` : ""}
+    ${S.key && !loading ? `<button class="link" data-act="refresh">Refresh now</button>` : ""}</div>
+    ${S.error ? `<p class="err">${esc(S.error)}</p>` : ""}`;
+}
+
+function machineHTML() {
+  const d = D(); const gm = gameMap();
+  const tabs = `<div class="tabs" role="group" aria-label="Sport">${SPORTS.map(s => `<button aria-pressed="${S.sport === s.k}" data-act="sport:${s.k}">${s.l}</button>`).join("")}</div>`;
+  if (!S.key) return tabs + statusHTML() + `<section class="step"><h2>Connect your odds feed</h2>
+    <p class="hint">Paste your PropLine API key to load live player props from DraftKings, FanDuel and other books. The key is saved only in this browser.</p>
+    <button class="btn" data-act="settings">Add API key</button></section>`;
+  if (!d) return tabs + statusHTML() + `<div class="empty">${S.loading[S.sport] ? "Pulling today's lines…" : "Tap Refresh now to load lines."}</div>`;
+  if (!d.games.length) return tabs + statusHTML() + `<div class="empty">No ${SPORTS.find(s => s.k === S.sport).l} games in the next few days.</div>`;
+  if (!d.legs.length) return tabs + statusHTML() + `<div class="empty">Games are listed, but the books haven't posted player props yet. Check back closer to game day.</div>`;
+
+  const pool = poolLegs();
+  const days = [...new Set(d.games.map(g => dayOf(g.t)))];
+  const markets = [...new Set(d.legs.map(l => l.m))].sort();
+  const f = S.f;
+  const poolSec = `<section class="step">
+    <div class="stephead"><span class="n">01</span><h2>Your pool</h2><button class="link" data-act="pool">${f.open ? "Done" : "Customize"}</button></div>
+    <p class="hint"><b style="color:var(--fg)">${pool.length.toLocaleString()}</b> legs can be drawn at ${S.book ? bookName(S.book) : "the best price across books"}.</p>
+    ${f.open ? `
+      <div class="label">Days</div><div class="chips">${days.map(x => chip(x, f.days.has(x), "day:" + x)).join("")}</div>
+      <div class="label">Games <span class="hint">(none picked = all)</span></div>
+      <div class="chips">${d.games.filter(g => !f.days.size || f.days.has(dayOf(g.t))).map(g => chip(g.label, f.games.has(g.id), "game:" + g.id)).join("")}</div>
+      <div class="label">Markets</div><div class="chips">${markets.map(m => chip(prettyMarket(m), !f.off.has(m), "mkt:" + m, f.off.has(m) ? "off" : "")).join("")}</div>
+      <div class="label">Leg odds</div><div class="chips">${chip("Any", f.odds === "any", "odds:any")}${chip("Safer (55%+)", f.odds === "safer", "odds:safer")}${chip("Longshots (+150 or longer)", f.odds === "long", "odds:long")}</div>
+      <label class="row"><span class="grow">Include alt lines</span><input id="sw-alt" type="checkbox" class="switch" data-act="alt" ${f.alt ? "checked" : ""}></label>
+      <label class="row"><span class="grow">Overs only</span><input id="sw-overs" type="checkbox" class="switch" data-act="overs" ${f.overs ? "checked" : ""}></label>` : ""}
+  </section>`;
+
+  const buildSec = `<section class="step">
+    <div class="stephead"><span class="n">02</span><h2>Build your ticket</h2></div>
+    <div class="seg"><button aria-pressed="${S.byLegs}" data-act="mode:legs">Pick legs</button><button aria-pressed="${!S.byLegs}" data-act="mode:pay">Pick payout</button></div>
+    ${S.byLegs ? `<div class="label">Legs</div><div class="chips">${[2, 3, 4, 5, 6, 8, 10].map(n => chip(String(n), S.legN === n, "legn:" + n)).join("")}</div>`
+    : `<div class="label">Pays at least</div>
+       <div class="chips">${[[100, "$100"], [250, "$250"], [500, "$500"], [1000, "$1K"], [2500, "$2.5K"], [10000, "$10K"], [100000, "$100K"]].map(([v, t]) => chip(t, S.target === v, "target:" + v)).join("")}</div>
+       <input id="custom-target" class="text" inputmode="numeric" placeholder="Custom payout, e.g. 750" data-input="target">
+       <div class="label">Max legs</div><div class="chips">${chip("Any", S.maxLegs == null, "maxl:any")}${[3, 4, 5, 6].map(n => chip(String(n), S.maxLegs === n, "maxl:" + n)).join("")}</div>
+       <p class="hint">Finds the likeliest ticket that returns at least this on your stake.</p>`}
+    <div class="label">Stake</div>
+    <div class="chips">${[5, 10, 25, 50, 100].map(v => chip("$" + v, S.stake === v, "stake:" + v)).join("")}</div>
+    <input id="custom-stake" class="text" inputmode="decimal" placeholder="Custom stake" data-input="stake">
+    <div class="label">Sportsbook</div>
+    <div class="chips">${BOOKS.map(b => chip(b.l, S.book === b.k, "book:" + b.k)).join("")}${chip("Compare all", S.book === null, "book:all")}</div>
+    ${S.book === null ? `<p class="warn">Compare mode uses each leg's best price across books. You can't bet that as one ticket.</p>` : ""}
+  </section>`;
+
+  return tabs + statusHTML() + poolSec + buildSec +
+    `<button class="lever" data-act="pull" ${pool.length ? "" : "disabled"}>${S.ticket.length ? "Pull again" : "Pull the lever"}</button>` +
+    (S.notice ? `<p class="warn">${esc(S.notice)}</p>` : "") +
+    (S.ticket.length ? receiptHTML(gm) : "");
+}
+
+function receiptHTML(gm) {
+  const pr = priceTicket(S.ticket, S.stake, S.book);
+  const sp = SPORTS.find(s => s.k === S.sport).l;
+  const legs = S.ticket.map((l, i) => {
+    const p = priceAt(l, S.book), g = gm[l.g];
+    return `<button class="leg" data-act="leg:${i}">
+      <span class="who"><b>${esc(legTitle(l))}${S.kept.has(l.id) ? '<span class="tag keep">Kept</span>' : ""}${l.alt ? '<span class="tag alt">Alt</span>' : ""}${l.thin ? '<span class="tag thin">Thin</span>' : ""}</b>
+      <small>${esc(g ? g.label : "")} · ${S.book ? bookName(S.book) : "best: " + bookName(p.b)}</small></span>
+      <span class="px">${fmtA(p && p.a)}</span></button>`;
+  }).join("");
+  const cutLine = pr.cut >= 0 ? `<span class="lbl">Book's cut</span><span>${pct(pr.cut)}</span>`
+    : `<span class="lbl">Pays more than fair by</span><span>${pct(-pr.cut)}</span>`;
+  const book = S.book ? BOOKS.find(b => b.k === S.book) : null;
+  return `<div class="receipt" id="receipt">
+    <div class="rh"><span>TICKET · ${sp}</span><span>${S.ticket.length} legs · ${new Date(D().t).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} lines</span></div>
+    <div class="hint" style="color:#5a6075">Tap a leg to keep, swap, change it, or open the player card.</div>
+    ${legs}
+    ${S.removed.size ? `<div class="removed">${[...S.removed].map(pk => { const n = (D().legs.find(l => l.pk === pk) || { p: pk }).p; return `<button class="btn" data-act="release:${esc(pk)}">${esc(n)} · Release</button>`; }).join("")}</div>` : ""}
+    <div class="tot">
+      <span class="lbl">Stake</span><span>${money(S.stake)}</span>
+      <span class="lbl">To win</span><span>${money(pr.ret - S.stake)}</span>
+      <span class="lbl">Total return</span><span>${money(pr.ret)}</span>
+      <span class="lbl">Real odds</span><span class="big">1 in ${Math.round(pr.oneIn).toLocaleString("en-US")}</span>
+      <span class="lbl">Fair price would pay</span><span>${money(pr.fairRet)}</span>
+      ${cutLine}
+    </div>
+    <p class="fine">Estimated from each leg's listed price. Same-game correlation isn't modeled and lines move. Check the full parlay at your book before betting.</p>
+    <div class="actions">
+      ${book ? `<button class="btn primary" data-act="openbook">Copy legs & open ${esc(book.l)}</button>` : ""}
+      <button class="btn" data-act="addtop">Add top-rated leg</button>
+      <button class="btn" data-act="save">Save</button>
+      <button class="btn" data-act="share">Share</button>
+      <button class="btn" data-act="copy">Copy as text</button>
+    </div>
+  </div>`;
+}
+
+function savedHTML() {
+  if (!S.saved.length) return `<h2 style="margin-bottom:8px">Your tickets</h2><div class="empty">Save a ticket from the receipt and it stays here on this phone.</div>`;
+  return `<h2 style="margin-bottom:4px">Your tickets</h2><p class="hint" style="margin-top:0">Saved on this phone. Prices are as of when you saved.</p>` +
+    S.saved.map((t, i) => {
+      const pr = priceTicket(t.legs, t.stake, t.book);
+      return `<div class="card">
+        <div class="row"><b class="grow">${esc(t.sport)} · ${t.legs.length} legs · ${esc(t.book ? bookName(t.book) : "best prices")}</b><span class="hint">${new Date(t.at).toLocaleDateString()}</span></div>
+        ${t.legs.map(l => { const p = priceAt(l, t.book); return `<div class="hint" style="color:var(--fg)">· ${esc(legTitle(l))} <span class="num">${fmtA(p && p.a)}</span></div>`; }).join("")}
+        <div class="num" style="color:var(--muted)">${money(t.stake)} → ${money(pr.ret)} · 1 in ${Math.round(pr.oneIn).toLocaleString("en-US")}</div>
+        <div class="actions"><button class="btn" data-act="sshare:${i}">Share</button><button class="btn" data-act="sdel:${i}">Delete</button></div></div>`;
+    }).join("");
+}
+
+function learnHTML() {
+  const qa = [
+    ["Is this betting advice?", "No. The machine draws legs from live prices for entertainment and shows how much the book keeps. A well-priced leg can still lose."],
+    ["How is a ticket priced?", "Each leg's American odds become a chance to hit. The fair chance comes from the over and under prices with the book's cut removed, using Pinnacle when it has the line and the middle of the other books when it doesn't. Fair chances multiply into the ticket's real odds. The gap between the fair return and the book's return is the book's cut."],
+    ["What does Thin mean?", "Only one book had both sides of that line, so its fair price leans on a single book."],
+    ["How are legs drawn?", "Legs priced better than fair come up more often, but repeats are dialed down so you don't see the same few legs. One player per ticket, and at most 10 legs from one game."],
+    ["Keep, Swap, Remove, Add?", "Keep holds a leg for your next pull. Swap redraws one leg. Remove drops it and keeps that player out until you tap Release. Add top-rated leg adds the best-priced leg left in the sport, ignoring your filters."],
+    ["Why pick a sportsbook?", "A parlay has to go on at one book, so the machine only draws legs that book offers and prices the ticket there. Compare all shows each leg's best price across books, which you can't bet as one ticket."],
+    ["Where do the lines come from?", "PropLine, refreshed automatically every few hours while the app is open, or whenever you tap Refresh now. Each refresh uses a handful of your daily requests."],
+    ["Limits", "Same-game legs move together and this doesn't account for that. Lines move after they load. Most parlays lose money over time after the book's cut. Need help? 1-800-GAMBLER."],
+  ];
+  return `<h2 style="margin-bottom:8px">How it works</h2>` + qa.map(([q, a]) => `<div class="card"><details><summary>${q}</summary><p>${a}</p></details></div>`).join("");
+}
+
+function sheetHTML() {
+  const sh = S.sheet; let body = "";
+  if (sh.type === "leg") {
+    const l = S.ticket[sh.i]; if (!l) { S.sheet = null; return ""; }
+    body = `<h3>${esc(legTitle(l))}</h3>
+      <button class="opt" data-act="keep:${sh.i}">${S.kept.has(l.id) ? "Stop keeping" : "Keep for next pull"}</button>
+      <button class="opt" data-act="swap:${sh.i}">Swap this leg</button>
+      <button class="opt" data-act="alts:${sh.i}">Change line or stat</button>
+      <button class="opt" data-act="card:${sh.i}">Player card</button>
+      <button class="opt" data-act="remove:${sh.i}" style="color:var(--rose)">Remove player</button>`;
+  } else if (sh.type === "alts") {
+    const l = S.ticket[sh.i]; const alts = alternatives(l);
+    body = `<h3>${esc(l.p)}</h3><p class="hint">Other lines and stats for this player at ${S.book ? bookName(S.book) : "the best price"}.</p>` +
+      (alts.length ? alts.map(a => { const p = priceAt(a, S.book); return `<button class="opt" data-act="use:${sh.i}:${esc(a.id)}"><span>${a.s === "O" ? "Over" : "Under"} ${a.pt} ${esc(prettyMarket(a.m))}</span><span class="num">${fmtA(p.a)}</span></button>`; }).join("")
+        : `<p class="hint">No other lines for this player.</p>`);
+  } else if (sh.type === "card") {
+    const l = S.ticket[sh.i]; const g = gameMap()[l.g];
+    body = `<h3>${esc(l.p)}</h3><p class="hint" style="margin:0">${esc(g ? g.label + " · " + dayOf(g.t) : "")}</p>
+      <div class="kv"><span>Leg</span><b>${l.s === "O" ? "Over" : "Under"} ${l.pt} ${esc(prettyMarket(l.m))}</b>
+      <span>Fair chance</span><b class="num">${pct(l.f)}</b>
+      <span>Fair price</span><b class="num">${fmtA(Math.round(l.f >= .5 ? -l.f / (1 - l.f) * 100 : (1 - l.f) / l.f * 100))}</b>
+      <span>Edge at ${S.book ? esc(bookName(S.book)) : "best price"}</span><b class="num">${(edge(l, S.book) * 100).toFixed(1)}%</b>
+      <span>Books with both sides</span><b class="num">${l.n}</b></div>
+      <div class="label">Price by book</div>
+      <div class="kv">${Object.entries(l.pr).map(([b, a]) => `<span>${esc(bookName(b))}</span><b class="num">${fmtA(a)}</b>`).join("")}</div>`;
+  } else if (sh.type === "text") {
+    body = `<h3>Copy this ticket</h3><p class="hint">Long-press the text and choose Copy.</p><textarea id="copy-area" class="text" rows="9" readonly>${esc(sh.text)}</textarea>`;
+  } else if (sh.type === "settings") {
+    body = `<h3>Settings</h3>
+      <label class="label" for="key-input">PropLine API key</label>
+      <input id="key-input" class="text" type="password" autocomplete="off" placeholder="Paste your key" value="${esc(S.key)}">
+      <p class="hint">Saved only in this browser on this phone. Never shared.</p>
+      <div class="label">Refresh lines every</div>
+      <div class="chips">${[1, 3, 6].map(h => chip(h + " hr", S.every === h, "every:" + h)).join("")}</div>
+      <p class="hint">Each refresh of one sport uses about 3 to 18 requests, depending on how many games are on. The free plan allows 1,000 a day.</p>
+      <button class="btn primary" style="background:var(--accent);color:var(--accent-ink);border-color:var(--accent)" data-act="savekey">Save & load lines</button>
+      ${S.key ? `<button class="btn" data-act="clearkey">Remove key</button>` : ""}`;
+  }
+  return `<div class="scrim" data-act="close"><div class="sheet" data-stop>${body}<button class="btn" data-act="close">Close</button></div></div>`;
+}
+
+/* ---------- events ---------- */
+document.addEventListener("click", e => {
+  const stop = e.target.closest("[data-stop]");
+  const el = e.target.closest("[data-act]");
+  if (!el) return;
+  if (stop && el.classList.contains("scrim")) return;
+  if (el.tagName === "INPUT") return; // switches handled by change
+  const [act, ...rest] = el.dataset.act.split(":"); const arg = rest.join(":");
+  const f = S.f;
+  switch (act) {
+    case "age": S.age = true; store.set("age", true); render(); maybeRefresh(); return;
+    case "tab": S.tab = arg; window.scrollTo(0, 0); break;
+    case "settings": S.sheet = { type: "settings" }; break;
+    case "close": S.sheet = null; break;
+    case "refresh": loadSport(S.sport); return;
+    case "sport": S.sport = arg; store.set("sport", arg); S.ticket = []; S.kept.clear(); S.removed.clear(); S.notice = ""; S.error = "";
+      f.days.clear(); f.games.clear(); f.off.clear(); render(); maybeRefresh(); return;
+    case "pool": f.open = !f.open; break;
+    case "day": f.days.has(arg) ? f.days.delete(arg) : f.days.add(arg); f.games.clear(); break;
+    case "game": f.games.has(arg) ? f.games.delete(arg) : f.games.add(arg); break;
+    case "mkt": f.off.has(arg) ? f.off.delete(arg) : f.off.add(arg); break;
+    case "odds": f.odds = arg; break;
+    case "mode": S.byLegs = arg === "legs"; break;
+    case "legn": S.legN = +arg; break;
+    case "target": S.target = +arg; break;
+    case "maxl": S.maxLegs = arg === "any" ? null : +arg; break;
+    case "stake": S.stake = +arg; break;
+    case "book": S.book = arg === "all" ? null : arg; store.set("book", S.book); S.ticket = []; S.kept.clear(); break;
+    case "pull": pull(); return;
+    case "leg": S.sheet = { type: "leg", i: +arg }; break;
+    case "keep": { const l = S.ticket[+arg]; S.kept.has(l.id) ? S.kept.delete(l.id) : S.kept.add(l.id); S.sheet = null; break; }
+    case "swap": swap(+arg); return;
+    case "remove": removeLeg(+arg); return;
+    case "alts": S.sheet = { type: "alts", i: +arg }; break;
+    case "card": S.sheet = { type: "card", i: +arg }; break;
+    case "use": { const [i, ...id] = rest; const nl = D().legs.find(l => l.id === id.join(":")); if (nl) S.ticket = S.ticket.map((x, j) => j === +i ? nl : x); S.sheet = null; break; }
+    case "release": S.removed.delete(arg); break;
+    case "addtop": addTop(); return;
+    case "save":
+      S.saved = [{ at: Date.now(), sport: SPORTS.find(s => s.k === S.sport).l, book: S.book, stake: S.stake, legs: S.ticket }, ...S.saved].slice(0, 50);
+      store.set("saved", S.saved); toast("Ticket saved"); break;
+    case "share": shareText(ticketText(S.ticket, S.stake, S.book)); return;
+    case "copy": copyText(ticketText(S.ticket, S.stake, S.book)); return;
+    case "openbook": {
+      const t = ticketText(S.ticket, S.stake, S.book);
+      const link = (D().links[S.ticket[0].g] || {})[S.book];
+      const url = link || BOOKS.find(b => b.k === S.book).u;
+      navigator.clipboard?.writeText(t).then(() => toast("Legs copied"), () => {});
+      window.open(url, "_blank", "noopener"); return;
+    }
+    case "sshare": { const t = S.saved[+arg]; shareText(ticketText(t.legs, t.stake, t.book)); return; }
+    case "sdel": S.saved.splice(+arg, 1); store.set("saved", S.saved); break;
+    case "every": S.every = +arg; store.set("every", S.every); break;
+    case "savekey": {
+      const v = document.getElementById("key-input").value.trim();
+      if (!v) { toast("Paste your key first"); return; }
+      S.key = v; store.set("key", v); S.sheet = null; S.error = ""; render(); loadSport(S.sport); return;
+    }
+    case "clearkey": S.key = ""; store.set("key", ""); S.sheet = null; break;
+  }
+  render();
+});
+document.addEventListener("change", e => {
+  const a = e.target.dataset.act;
+  if (a === "alt") { S.f.alt = e.target.checked; render(); }
+  if (a === "overs") { S.f.overs = e.target.checked; render(); }
+});
+document.addEventListener("input", e => {
+  const k = e.target.dataset.input; if (!k) return;
+  const v = parseFloat(e.target.value.replace(/[^0-9.]/g, ""));
+  if (!(v > 0)) return;
+  if (k === "target") S.target = v; else S.stake = v;
+  document.querySelectorAll(`[data-act^="${k}:"]`).forEach(c => c.setAttribute("aria-pressed", "false"));
+});
+
+render();
+maybeRefresh();
+</script>
+</body>
+</html>
