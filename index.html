@@ -260,6 +260,9 @@ i.up{color:var(--brand)} i.dn{color:var(--orange)}
 .actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:16px}
 .btn{background:var(--surface-2);border:1px solid var(--line);border-radius:12px;padding:10px 14px;font-weight:500;font-size:13.5px;color:var(--fg)}
 .btn.primary{flex-basis:100%;background:var(--fg);color:var(--bg);border-color:var(--fg);font-weight:600;padding:13px}
+.btn.pb{display:inline-flex;align-items:center;gap:8px;border-color:color-mix(in srgb,var(--brand) 60%,transparent);color:var(--brand)}
+.btn.pb svg,.pbopt svg{width:17px;height:17px;flex:none}
+.pbopt>span:first-child{display:flex;align-items:center;gap:10px;font-weight:600}
 .btn.gold{background:linear-gradient(180deg,var(--brand-hi),var(--brand));color:var(--brand-ink);border-color:var(--brand);font-weight:600}
 .removed{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
 
@@ -829,6 +832,16 @@ function snapText(t) {
   const lines = t.legs.map((l, i) => `${i + 1}) ${l.title} ${fmtA(l.a)}${l.gl ? "  [" + l.gl + "]" : ""}${l.r ? "  " + RES[l.r].t : ""}`);
   return `SlipDraw · ${t.sport} ${t.legs.length}-leg parlay (${t.book ? bookName(t.book) : "best prices"})\n${lines.join("\n")}\nStake ${money(t.stake)} returns ${money(pr.ret)}\nReal odds: 1 in ${Math.round(pr.oneIn).toLocaleString("en-US")}\n21+. Entertainment only. 1-800-GAMBLER`;
 }
+/* Playbook (by Better Collective) turns pasted picks into a clickable betslip.
+   No public API, so we copy the legs and open a chat with it. */
+const PLAYBOOK = {
+  discord: "https://bit.ly/playbookdiscord",
+  telegram: "https://t.me/PlaybookAI_bot",
+  x: "https://x.com/messages/compose?recipient_id=&text=",
+  xProfile: "https://x.com/Playbook",
+};
+const playbookText = t => `${t.book ? bookName(t.book) : "Best prices"} parlay\n` +
+  t.legs.map(l => `${l.title.replace(" — ", " ")} ${fmtA(l.a)}`).join("\n");
 const curSnap = () => snapshot(S.ticket, S.stake, S.book, S.sport);
 
 const b64e = s => btoa(String.fromCharCode(...new TextEncoder().encode(s))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -1142,6 +1155,7 @@ function machineHTML() {
     (S.ticket.length ? receiptHTML(gm) : "");
 }
 
+const PB_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v11H9l-5 4z"/><path d="M8 9h8M8 12h5"/></svg>';
 const ICO = {
   pin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6l-1 6 3 3H7l3-3z"/><path d="M12 12v9"/></svg>',
   swap: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 0 0-14-5L4 8"/><path d="M4 3v5h5"/><path d="M4 13a8 8 0 0 0 14 5l2-2"/><path d="M20 21v-5h-5"/></svg>',
@@ -1204,6 +1218,7 @@ function receiptHTML(gm) {
       <button class="btn" data-act="addtop">Add top-rated leg</button>
       <button class="btn" data-act="save">Save</button>
       <button class="btn" data-act="share">Share…</button>
+      <button class="btn pb" data-act="playbook">${PB_ICON}Get betslip via Playbook</button>
     </div>
   </div>`;
 }
@@ -1335,7 +1350,17 @@ function sheetHTML() {
       <button class="opt" data-act="img:story"><span>Share story image</span><span class="hint">Tall, for stories</span></button>
       <button class="opt" data-act="link"><span>Copy share link</span><span class="hint">Opens this ticket</span></button>
       <button class="opt" data-act="stext"><span>Share as text</span></button>
-      <button class="opt" data-act="ctext"><span>Copy as text</span></button>`;
+      <button class="opt" data-act="ctext"><span>Copy as text</span></button>
+      <button class="opt" data-act="pbfrom"><span>Get betslip via Playbook</span><span class="hint">Discord, Telegram or X</span></button>`;
+  } else if (sh.type === "playbook") {
+    body = `<h3>Get betslip via Playbook</h3>
+      <p class="hint">We copy your legs and open a chat with Playbook. Paste them in and it replies with a betslip that loads the legs at your sportsbook.</p>
+      <button class="opt pbopt" data-act="pbgo:discord"><span>${PB_ICON}Open in Discord</span><span class="hint">Recommended</span></button>
+      <button class="opt pbopt" data-act="pbgo:telegram"><span>${PB_ICON}Open in Telegram</span></button>
+      <button class="opt pbopt" data-act="pbgo:x"><span>${PB_ICON}DM @Playbook on X</span></button>
+      <div class="flabel">What gets copied</div>
+      <textarea class="text" rows="${Math.min(10, sh.src.legs.length + 1)}" readonly>${esc(playbookText(sh.src))}</textarea>
+      <p class="hint">First time on Discord? You may need to join Playbook's server or add the app before you can message it. Playbook is a separate service, not part of SlipDraw.</p>`;
   } else if (sh.type === "text") {
     body = `<h3>Copy this ticket</h3><p class="hint">Long-press the text and choose Copy.</p><textarea id="copy-area" class="text" rows="9" readonly>${esc(sh.text)}</textarea>`;
   } else if (sh.type === "settings") {
@@ -1422,6 +1447,14 @@ document.addEventListener("click", e => {
     case "img": { const t = S.sheet.src; S.sheet = null; render(); shareImage(t, arg === "story"); return; }
     case "link": { const t = S.sheet.src; S.sheet = null; render(); copyText(shareLink(t)); return; }
     case "stext": { const t = S.sheet.src; S.sheet = null; render(); shareText(snapText(t)); return; }
+    case "playbook": S.sheet = { type: "playbook", src: curSnap() }; break;
+    case "pbfrom": S.sheet = { type: "playbook", src: S.sheet.src }; break;
+    case "pbgo": {
+      const txt = playbookText(S.sheet.src);
+      const url = arg === "x" ? PLAYBOOK.xProfile : PLAYBOOK[arg];
+      try { navigator.clipboard.writeText(txt).then(() => toast("Legs copied — paste them to Playbook"), () => toast("Long-press the legs to copy them")); } catch { toast("Long-press the legs to copy them"); }
+      window.open(url, "_blank", "noopener"); return;
+    }
     case "ctext": { const t = S.sheet.src; S.sheet = null; render(); copyText(snapText(t)); return; }
     case "unshare": S.shared = null; history.replaceState(null, "", location.pathname); break;
     case "grade": gradeAll(); return;
