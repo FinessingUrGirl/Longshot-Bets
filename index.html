@@ -363,7 +363,7 @@ const S = {
   tab: "machine",
   sport: store.get("sport", "football_nfl"),
   book: store.get("book", "draftkings"),
-  f: { days: new Set(), games: new Set(), off: new Set(), alt: true, unders: true, top: false, odds: "any", open: true, yes: true, hit: store.get("hit", true), pickG: false, pickM: false },
+  f: { days: new Set(), games: new Set(), off: new Set(), alt: false, unders: true, top: false, odds: "any", open: true, yes: true, hit: store.get("hit", true), pickG: false, pickM: false },
   byLegs: true, legN: 4, target: 1000, maxLegs: null, stake: 10,
   ticket: [], kept: new Set(), removed: new Set(), drawn: {},
   saved: store.get("saved", []),
@@ -669,7 +669,7 @@ function poolLegs(skip = "") {
     if (!skip.includes("a") && !f.alt && l.alt && l.kind === "ou") return false;
     if (!skip.includes("y") && !f.yes && l.kind === "yes") return false;
     if (!skip.includes("u") && !f.unders && l.s === "U") return false;
-    if (f.hit && l.alt && hitBefore(S.sport, l) === false) return false;
+    if (f.alt && f.hit && l.alt && hitBefore(S.sport, l) === false) return false;
     const p = priceAt(l, S.book); if (!p) return false;
     if (f.odds === "safer" && l.f < 0.55) return false;
     if (f.odds === "long" && p.a < 150) return false;
@@ -1073,7 +1073,7 @@ function machineHTML() {
       <div class="grow">
         <div class="eyebrow"><span class="badge">1</span>Your pool · choose what the machine can draw</div>
         <h2 class="pooltitle">${title}</h2>
-        <p class="hint">${gamesTxt} · ${mktTxt} · ${oddsTxt}${S.book ? ` · ${esc(bookName(S.book))}` : ""}</p>
+        <p class="hint">${gamesTxt} · ${mktTxt} · ${oddsTxt}</p>
       </div>
       <button class="custom" data-act="pool" aria-expanded="${f.open}">Customize <span>${f.open ? "▲" : "▼"}</span></button>
     </div>
@@ -1091,8 +1091,7 @@ function machineHTML() {
       <div class="chips">
         ${toggle("Unders", nUnders, f.unders, "unders")}
         ${toggle("Alt lines", nAlt, f.alt, "alt")}
-        ${toggle("Scorer &amp; Yes props", nYes, f.yes, "yes")}
-        ${toggle("Lines he's hit", null, f.hit, "hit")}
+        ${f.alt ? toggle("Only lines he's hit", null, f.hit, "hit") : ""}
       </div>
       <button class="drop" data-act="pickm" aria-expanded="${f.pickM}">Markets <b>${f.off.size ? nMktOn + " of " + markets.length : "All " + markets.length}</b> <i>${f.pickM ? "▲" : "▼"}</i></button>
       ${f.pickM ? `<div class="mpanel">
